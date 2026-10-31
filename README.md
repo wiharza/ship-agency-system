@@ -155,6 +155,9 @@ diterbitkan); tombol **+ Tambah Item PDA/FDA** ada di tab Finance; tombol
 python3 -m py_compile server.py engine/db.py engine/laytime.py
 python3 tests/test_laytime.py
 python3 tests/test_api.py     # tes integrasi HTTP (port 8999); memutasi agency.db
+# Backend libsql (opsional, butuh paket libsql):
+pip install -r requirements.txt
+python3 tests/test_libsql_backend.py   # SKIP bila libsql belum terinstal
 ```
 
 **Perhatian:** `tests/test_api.py` memutasi `agency.db` (menutup port call
@@ -162,6 +165,37 @@ contoh, membuat port call + kapal uji). Cadangkan dulu (`cp agency.db
 /tmp/agency.db.bak`) dan kembalikan sesudahnya, atau bangun ulang DB bersih
 dengan menghapus `agency.db` lalu menjalankan `python3 server.py` sekali
 (seeding otomatis) dan menghentikannya.
+
+## Persistensi Turso (opsional — untuk deploy Vercel)
+
+Tanpa Turso, data di Vercel hanya hidup selama instance warm (salinan
+`/tmp/agency.db`), lalu reset. Dengan Turso (libSQL remote), data persisten
+dan sama untuk semua instance. Lokal tetap bisa jalan tanpa Turso.
+
+```bash
+# 1. Buat database + token (butuh Turso CLI)
+turso auth login
+turso db create ship-agency
+turso db show ship-agency --url        # -> libsql://ship-agency-xxxx.turso.io
+turso db tokens create ship-agency     # -> token (jaga baik-baik!)
+
+# 2. Lokal: salin .env.example ke .env dan isi dua variabelnya, lalu migrasikan data
+cp .env.example .env   # JANGAN commit .env (sudah di .gitignore)
+pip install -r requirements.txt
+python3 scripts/migrate_to_turso.py        # batal bila Turso sudah berisi data
+python3 scripts/migrate_to_turso.py --force  # timpa isi Turso
+python3 scripts/migrate_to_turso.py --seed   # isi Turso dengan data contoh saja
+
+# 3. Vercel: isi TURSO_DATABASE_URL + TURSO_AUTH_TOKEN di
+#    Settings -> Environment Variables, lalu deploy ulang.
+#    Tanpa kedua variabel itu, aplikasi otomatis memakai SQLite lokal.
+```
+
+Detail: `docs/adr/0009-persistensi-turso-libsql.md`. Tier gratis Turso
+(Starter): 500 database, 9 GB storage, 1 miliar baris dibaca/bulan,
+25 juta baris ditulis/bulan. Catatan: perilaku remote (PRAGMA foreign key,
+transaksi, latensi) belum terverifikasi terhadap Turso sungguhan — yang
+terverifikasi baru mode file lokal libsql (`tests/test_libsql_backend.py`).
 
 ## Keamanan & batasan (jujur)
 

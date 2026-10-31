@@ -13,6 +13,138 @@ import threading
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 
+try:
+    import libsql as _libsql
+except ImportError:  # lokal tanpa Turso: tetap jalan dengan sqlite3 stdlib
+    _libsql = None
+
+
+class _Row:
+    """Baris hasil query yang berperilaku seperti sqlite3.Row.
+
+    Dibutuhkan karena koneksi libsql mengembalikan tuple polos tanpa
+    row_factory, sementara server.py mengakses baris by nama (r["status"]),
+    by indeks (r[0]), dan dict(r)."""
+
+    __slots__ = ("_keys", "_values")
+
+    def __init__(self, keys, values):
+        self._keys = list(keys)
+        self._values = tuple(values)
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            return self._values[self._keys.index(key)]
+        return self._values[key]
+
+    def keys(self):
+        return list(self._keys)
+
+    def __iter__(self):
+        return iter(self._values)
+
+    def __len__(self):
+        return len(self._values)
+
+    def __repr__(self):
+        return repr(dict(zip(self._keys, self._values)))
+
+
+def _wrap_rows(cursor, rows):
+    keys = [d[0] for d in (cursor.description or [])]
+    return [_Row(keys, tuple(r)) for r in rows]
+
+
+class _LibSQLCursor:
+    """Cursor libsql yang mengembalikan _Row (mirip sqlite3.Row)."""
+
+    def __init__(self, cursor):
+        self._cur = cursor
+
+    @property
+    def description(self):
+        return self._cur.description
+
+    @property
+    def lastrowid(self):
+        return self._cur.lastrowid
+
+    @property
+    def rowcount(self):
+        return self._cur.rowcount
+
+    def execute(self, sql, params=()):
+        self._cur.execute(sql, params)
+        return self
+
+    def executemany(self, sql, seq):
+        self._cur.executemany(sql, seq)
+        return self
+
+    def executescript(self, sql):
+        self._cur.executescript(sql)
+        return self
+
+    def fetchone(self):
+        row = self._cur.fetchone()
+        if row is None:
+            return None
+        return _wrap_rows(self, [row])[0]
+
+    def fetchall(self):
+        return _wrap_rows(self, self._cur.fetchall())
+
+    def fetchmany(self, size=None):
+        rows = self._cur.fetchmany(size) if size is not None else self._cur.fetchmany()
+        return _wrap_rows(self, rows)
+
+    def close(self):
+        self._cur.close()
+
+
+class _LibSQLConnection:
+    """Koneksi libsql yang meniru antarmuka sqlite3 yang dipakai server.py:
+    execute/cursor/commit/rollback/close + `with conn:`."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def cursor(self):
+        return _LibSQLCursor(self._conn.cursor())
+
+    def execute(self, sql, params=()):
+        return _LibSQLCursor(self._conn.execute(sql, params))
+
+    def executemany(self, sql, seq):
+        return _LibSQLCursor(self._conn.executemany(sql, seq))
+
+    def executescript(self, sql):
+        self._conn.executescript(sql)
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        self._conn.close()
+
+    @property
+    def in_transaction(self):
+        return self._conn.in_transaction
+
+    @property
+    def isolation_level(self):
+        return self._conn.isolation_level
+
+    def __enter__(self):
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return self._conn.__exit__(exc_type, exc, tb)
+
 
 def _resolve_db_file():
     """Pilih lokasi file SQLite yang selalu writable.
@@ -48,6 +180,33 @@ DB_FILE = _resolve_db_file()
 
 
 def get_db():
+    """Koneksi database.
+
+    Bila TURSO_DATABASE_URL + TURSO_AUTH_TOKEN terisi, pakai Turso (libSQL
+    remote) — data persisten dan sama untuk semua instance Vercel. Bila tidak
+    ada, pakai SQLite lokal seperti sebelumnya (tanpa dependensi tambahan).
+    TURSO_DATABASE_URL berupa path file biasa juga diterima: libsql dipakai
+    dalam mode file lokal (berguna untuk menguji backend libsql tanpa akun
+    Turso). libsql mengembalikan tuple polos tanpa row_factory, jadi koneksi
+    remote/file dibungkus _LibSQLConnection agar server.py tetap bisa memakai
+    r["kolom"], r[0], dan dict(r) seperti pada sqlite3.Row."""
+    url = os.environ.get("TURSO_DATABASE_URL", "").strip()
+    token = os.environ.get("TURSO_AUTH_TOKEN", "").strip()
+    if url and _libsql is not None:
+        if url.startswith("libsql://") or url.startswith("https://") or url.startswith("http://"):
+            if not token:
+                raise RuntimeError(
+                    "TURSO_AUTH_TOKEN wajib diisi bila TURSO_DATABASE_URL remote dipakai")
+            raw = _libsql.connect(url, auth_token=token)
+        else:
+            raw = _libsql.connect(url)
+        conn = _LibSQLConnection(raw)
+        conn.execute("PRAGMA foreign_keys = ON")
+        return conn
+    if url and _libsql is None:
+        raise RuntimeError(
+            "TURSO_DATABASE_URL terisi tapi paket 'libsql' belum terinstal "
+            "(pip install -r requirements.txt)")
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")

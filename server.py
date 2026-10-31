@@ -272,6 +272,49 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"status": "success", "port_call_id": pc_id, "message": f"Port Call {pc_id} berhasil dibuat"})
             return
 
+        if path.startswith("/api/clearances/"):
+            parts = path.strip("/").split("/")
+            # POST /api/clearances/<id>/update
+            if len(parts) >= 3:
+                clearance_id = parts[2]
+                doc_number = payload.get("doc_number")
+                status = payload.get("status")
+                remarks = payload.get("remarks")
+
+                conn = get_db()
+                c = conn.cursor()
+                c.execute("SELECT * FROM clearances WHERE id = ?", (clearance_id,))
+                cl = c.fetchone()
+                if not cl:
+                    conn.close()
+                    self.send_json({"error": "Dokumen clearance tidak ditemukan"}, status=404)
+                    return
+
+                new_doc_number = doc_number.strip() if doc_number is not None else cl["doc_number"]
+                new_status = status if status is not None else cl["status"]
+                new_remarks = remarks.strip() if remarks is not None else cl["remarks"]
+                approval_time = cl["approval_time"]
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if new_status == "APPROVED" and not approval_time:
+                    approval_time = now_str
+                elif new_status != "APPROVED":
+                    approval_time = None
+
+                file_sha256 = cl["file_sha256"]
+                if new_doc_number and (not file_sha256 or doc_number != cl["doc_number"]):
+                    fake_content = f"{cl['port_call_id']}-{cl['doc_type']}-{new_doc_number}".encode("utf-8")
+                    file_sha256 = calculate_file_sha256(fake_content)
+
+                with conn:
+                    conn.execute("""
+                    UPDATE clearances 
+                    SET doc_number = ?, status = ?, remarks = ?, approval_time = ?, file_sha256 = ?
+                    WHERE id = ?
+                    """, (new_doc_number, new_status, new_remarks, approval_time, file_sha256, clearance_id))
+                conn.close()
+                self.send_json({"status": "success", "message": "Dokumen clearance berhasil diperbarui", "file_sha256": file_sha256})
+                return
+
         if path.startswith("/api/port-calls/"):
             parts = path.strip("/").split("/")
 
@@ -361,24 +404,28 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             # POST /api/port-calls/<id>/clearance
             if len(parts) == 4 and parts[3] == "clearance":
                 pc_id = parts[2]
-                agency = payload.get("agency")
-                doc_type = payload.get("doc_type")
-                doc_number = payload.get("doc_number")
+                agency = payload.get("agency", "INAPORTNET_SIMPADU")
+                doc_type = payload.get("doc_type", "Dokumen Tambahan")
+                doc_number = (payload.get("doc_number") or "").strip()
                 status = payload.get("status", "APPROVED")
                 remarks = payload.get("remarks", "")
-                fake_file_content = f"{pc_id}-{doc_type}-{doc_number}".encode("utf-8")
-                file_sha256 = calculate_file_sha256(fake_file_content)
+                
+                file_sha256 = None
+                if doc_number:
+                    fake_file_content = f"{pc_id}-{doc_type}-{doc_number}".encode("utf-8")
+                    file_sha256 = calculate_file_sha256(fake_file_content)
 
                 doc_slug = (doc_type or "doc").lower().replace(' ', '_')
                 conn = get_db()
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                approval_time = now_str if status == "APPROVED" else None
                 with conn:
                     conn.execute("""
                     INSERT INTO clearances (port_call_id, agency, doc_type, doc_number, submission_time, approval_time, status, file_name, file_sha256, remarks, submitted_by)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (pc_id, agency, doc_type, doc_number, now_str, now_str, status, f"{doc_slug}.pdf", file_sha256, remarks, "ops_agent"))
+                    """, (pc_id, agency, doc_type, doc_number, now_str, approval_time, status, f"{doc_slug}.pdf", file_sha256, remarks, "ops_agent"))
                 conn.close()
-                self.send_json({"status": "success", "file_sha256": file_sha256})
+                self.send_json({"status": "success", "file_sha256": file_sha256, "message": f"Dokumen {doc_type} berhasil dicatat"})
                 return
 
             # POST /api/port-calls/<id>/laytime/calculate

@@ -155,7 +155,10 @@
         <div id="tab-clearances" class="tab-pane" style="display: none;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
             <p style="font-size: 12px; color: var(--text-muted);">Pencatatan nomor surat resmi dan hash berkas SHA-256 (Putusan Q18).</p>
-            <button class="btn btn-outline" onclick="triggerSPBModal()">+ Terbitkan SPB</button>
+            <div style="display: flex; gap: 8px;">
+              <button class="btn btn-cyan" style="padding: 4px 10px; font-size: 12px;" onclick="openNewClearanceModal()">+ Tambah Item Dokumen</button>
+              <button class="btn btn-outline" style="padding: 4px 10px; font-size: 12px;" onclick="triggerSPBModal()">+ Terbitkan SPB</button>
+            </div>
           </div>
           <table>
             <thead>
@@ -165,6 +168,7 @@
                 <th>Nomor Dokumen</th>
                 <th>Status</th>
                 <th>Hash Integritas (SHA-256)</th>
+                <th style="width: 80px; text-align: center;">Aksi</th>
               </tr>
             </thead>
             <tbody id="clearances-table-body"></tbody>
@@ -420,12 +424,14 @@
       clTable.innerHTML = '';
       (currentData.clearances || []).forEach(cl => {
         const tr = document.createElement('tr');
+        const badgeClass = cl.status === 'APPROVED' ? 'badge-green' : (cl.status === 'REJECTED' ? 'badge-red' : 'badge-yellow');
         tr.innerHTML = `
           <td><strong style="color:var(--cyan);">${cl.agency}</strong></td>
           <td>${cl.doc_type}</td>
           <td>${cl.doc_number || '<span style="color:var(--yellow)">Belum Terbit</span>'}</td>
-          <td><span class="badge ${cl.status === 'APPROVED' ? 'badge-green' : 'badge-yellow'}">${cl.status}</span></td>
-          <td class="mono">${cl.file_sha256 ? cl.file_sha256.substring(0, 16) + '...' : '-'}</td>
+          <td><span class="badge ${badgeClass}">${cl.status}</span></td>
+          <td class="mono" title="${cl.file_sha256 || ''}">${cl.file_sha256 ? cl.file_sha256.substring(0, 16) + '...' : '-'}</td>
+          <td style="text-align: center;"><button class="btn btn-outline" style="padding: 2px 8px; font-size: 11px;" onclick="openEditClearanceModal(${cl.id})">Edit</button></td>
         `;
         clTable.appendChild(tr);
       });
@@ -743,6 +749,89 @@
       }
     }
 
+    function openEditClearanceModal(clId) {
+      if (!currentData || !currentData.clearances) return;
+      const cl = currentData.clearances.find(c => c.id === clId);
+      if (!cl) return;
+
+      document.getElementById('edit-cl-id').value = cl.id;
+      document.getElementById('edit-cl-agency').value = cl.agency;
+      document.getElementById('edit-cl-type').value = cl.doc_type;
+      document.getElementById('edit-cl-number').value = cl.doc_number || '';
+      document.getElementById('edit-cl-status').value = cl.status;
+      document.getElementById('edit-cl-remarks').value = cl.remarks || '';
+
+      document.getElementById('modal-edit-clearance').style.display = 'flex';
+    }
+
+    function closeEditClearanceModal() {
+      document.getElementById('modal-edit-clearance').style.display = 'none';
+    }
+
+    async function submitEditClearance() {
+      const id = document.getElementById('edit-cl-id').value;
+      const doc_number = document.getElementById('edit-cl-number').value.trim();
+      const status = document.getElementById('edit-cl-status').value;
+      const remarks = document.getElementById('edit-cl-remarks').value.trim();
+
+      const res = await fetch(`/api/clearances/${id}/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ doc_number, status, remarks })
+      });
+      const data = await res.json();
+      if (data.status === 'success') {
+        closeEditClearanceModal();
+        if (currentPortCallId) await selectPortCall(currentPortCallId);
+      } else {
+        alert("Gagal: " + (data.error || "Terjadi kesalahan"));
+      }
+    }
+
+    function openNewClearanceModal() {
+      if (!currentPortCallId) {
+        alert("Pilih Port Call terlebih dahulu!");
+        return;
+      }
+      document.getElementById('new-cl-agency').value = 'INAPORTNET_SIMPADU';
+      document.getElementById('new-cl-type').value = '';
+      document.getElementById('new-cl-number').value = '';
+      document.getElementById('new-cl-status').value = 'SUBMITTED';
+      document.getElementById('new-cl-remarks').value = '';
+      document.getElementById('modal-new-clearance').style.display = 'flex';
+    }
+
+    function closeNewClearanceModal() {
+      document.getElementById('modal-new-clearance').style.display = 'none';
+    }
+
+    async function submitNewClearance() {
+      if (!currentPortCallId) return;
+      const agency = document.getElementById('new-cl-agency').value;
+      const doc_type = document.getElementById('new-cl-type').value.trim();
+      const doc_number = document.getElementById('new-cl-number').value.trim();
+      const status = document.getElementById('new-cl-status').value;
+      const remarks = document.getElementById('new-cl-remarks').value.trim();
+
+      if (!doc_type) {
+        alert("Jenis Dokumen wajib diisi!");
+        return;
+      }
+
+      const res = await fetch(`/api/port-calls/${currentPortCallId}/clearance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agency, doc_type, doc_number, status, remarks })
+      });
+      const data = await res.json();
+      if (data.status === 'success') {
+        closeNewClearanceModal();
+        await selectPortCall(currentPortCallId);
+      } else {
+        alert("Gagal: " + (data.error || "Terjadi kesalahan"));
+      }
+    }
+
     window.onload = () => {
       loadPortCalls();
       loadMasterData();
@@ -798,6 +887,119 @@
       <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;">
         <button class="btn btn-outline" onclick="closeNewPortCallModal()">Batal</button>
         <button class="btn btn-cyan" onclick="submitNewPortCall()">Simpan Port Call</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Edit Dokumen CIGP / Clearance -->
+  <div id="modal-edit-clearance" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 9999; align-items: center; justify-content: center;">
+    <div class="card" style="width: 480px; max-width: 90vw; background: #0f172a; border: 1px solid var(--cyan); box-shadow: 0 10px 25px rgba(0,0,0,0.6); margin: 0;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h3 style="margin: 0; color: var(--cyan);">✏️ Edit Dokumen / Izin CIGP</h3>
+        <button class="btn btn-outline" style="padding: 2px 8px; font-size: 13px;" onclick="closeEditClearanceModal()">✕</button>
+      </div>
+
+      <input type="hidden" id="edit-cl-id">
+
+      <div class="form-group">
+        <label>Instansi / Modul:</label>
+        <input type="text" id="edit-cl-agency" disabled style="opacity: 0.7;">
+      </div>
+
+      <div class="form-group">
+        <label>Jenis Dokumen:</label>
+        <input type="text" id="edit-cl-type" disabled style="opacity: 0.7;">
+      </div>
+
+      <div class="form-group">
+        <label>Nomor Dokumen / Surat Keputusan:</label>
+        <input type="text" id="edit-cl-number" placeholder="Contoh: PPK.2026.JKT.00891 atau BC11-2026-00341">
+      </div>
+
+      <div class="form-group">
+        <label>Status Dokumen / Persetujuan:</label>
+        <select id="edit-cl-status">
+          <option value="PENDING">PENDING (Menunggu Pengajuan / Draft)</option>
+          <option value="SUBMITTED">SUBMITTED (Terkirim / Sedang Diverifikasi)</option>
+          <option value="APPROVED">APPROVED (Disetujui / Terbit Resmi)</option>
+          <option value="REJECTED">REJECTED (Ditolak / Butuh Revisi)</option>
+          <option value="EXPIRED">EXPIRED (Kedaluwarsa)</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label>Catatan / Keterangan Tambahan:</label>
+        <input type="text" id="edit-cl-remarks" placeholder="Misal: Sudah diverifikasi petugas piket via portal">
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;">
+        <button class="btn btn-outline" onclick="closeEditClearanceModal()">Batal</button>
+        <button class="btn btn-cyan" onclick="submitEditClearance()">Simpan Perubahan</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Tambah Dokumen CIGP Baru -->
+  <div id="modal-new-clearance" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 9999; align-items: center; justify-content: center;">
+    <div class="card" style="width: 500px; max-width: 90vw; background: #0f172a; border: 1px solid var(--cyan); box-shadow: 0 10px 25px rgba(0,0,0,0.6); margin: 0;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h3 style="margin: 0; color: var(--cyan);">➕ Tambah Item Dokumen / Perizinan CIGP</h3>
+        <button class="btn btn-outline" style="padding: 2px 8px; font-size: 13px;" onclick="closeNewClearanceModal()">✕</button>
+      </div>
+
+      <div class="form-group">
+        <label>Instansi / Modul:</label>
+        <select id="new-cl-agency">
+          <option value="INAPORTNET_SIMPADU">INAPORTNET_SIMPADU (Syahbandar / KUPP)</option>
+          <option value="INAPORTNET_SPS">INAPORTNET_SPS (Sistem Pelayanan Kapal)</option>
+          <option value="BEA_CUKAI">BEA CUKAI (Customs / CEISA / Manifest)</option>
+          <option value="IMIGRASI">IMIGRASI (Immigration / Crew List)</option>
+          <option value="KARANTINA_KESEHATAN">KARANTINA KESEHATAN (Health Quarantine / COP)</option>
+          <option value="BARANTIN">BARANTIN (Karantina Hewan, Ikan & Tumbuhan)</option>
+          <option value="BUP_PELINDO">BUP / PELINDO (Pemanduan & Penundaan)</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label>Jenis Dokumen:</label>
+        <input type="text" id="new-cl-type" list="doc-types-list" placeholder="Pilih atau ketik jenis dokumen">
+        <datalist id="doc-types-list">
+          <option value="PPK (Pemberitahuan Pelayaran Kapal)"></option>
+          <option value="RKSP (Rencana Kedatangan Sarana Pengangkut)"></option>
+          <option value="Inward Manifest BC 1.1"></option>
+          <option value="Outward Manifest BC 1.2"></option>
+          <option value="Immigration Crew List Clearance"></option>
+          <option value="Port Health Clearance (COP / Free Pratique)"></option>
+          <option value="Maritime Declaration of Health (MDH)"></option>
+          <option value="SPK Pandu & Tunda"></option>
+          <option value="Surat Persetujuan Berlayar (SPB)"></option>
+          <option value="Sertifikat Garis Muat / Load Line"></option>
+          <option value="Sertifikat Keselamatan Konstruksi"></option>
+        </datalist>
+      </div>
+
+      <div class="form-group">
+        <label>Nomor Dokumen (Kosongkan bila belum terbit):</label>
+        <input type="text" id="new-cl-number" placeholder="Nomor resmi jika sudah ada">
+      </div>
+
+      <div class="form-group">
+        <label>Status Dokumen Saat Ini:</label>
+        <select id="new-cl-status">
+          <option value="PENDING">PENDING (Draft / Menunggu Disiapkan)</option>
+          <option value="SUBMITTED" selected>SUBMITTED (Sudah Diajukan ke Portal)</option>
+          <option value="APPROVED">APPROVED (Sudah Disetujui / Terbit)</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label>Catatan / Keterangan:</label>
+        <input type="text" id="new-cl-remarks" placeholder="Misal: Menunggu verifikasi online">
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;">
+        <button class="btn btn-outline" onclick="closeNewClearanceModal()">Batal</button>
+        <button class="btn btn-cyan" onclick="submitNewClearance()">Simpan Dokumen</button>
       </div>
     </div>
   </div>

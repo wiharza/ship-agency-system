@@ -49,7 +49,8 @@ def test_integration():
             assert res.status == 200
             data = json.loads(res.read().decode("utf-8"))
             assert len(data["port_calls"]) > 0
-            pc_id = data["port_calls"][0]["id"]
+            pc = next(p for p in data["port_calls"] if p["id"] == "PC-2026-JKT-0001")
+            pc_id = pc["id"]
         print(f"[TEST 2/8] GET /api/port-calls Berhasil (Ditemukan {len(data['port_calls'])} port calls).")
 
         # 3. Test GET /api/port-calls/<id>
@@ -160,7 +161,53 @@ def test_integration():
             assert False, "Port code typo/tidak terdaftar harus ditolak 400"
         except urllib.error.HTTPError as e:
             assert e.code == 400
-        print("[TEST 10/10] Typo Prevention Barrier Berhasil (Kode pelabuhan salah ditolak 400).")
+        print("[TEST 10/12] Typo Prevention Barrier Berhasil (Kode pelabuhan salah ditolak 400).")
+
+        # 11. Test Add New Clearance Item
+        req_add_cl = urllib.request.Request(
+            f"{base_url}/api/port-calls/{pc_id}/clearance",
+            data=json.dumps({
+                "agency": "BEA_CUKAI",
+                "doc_type": "Outward Manifest BC 1.2",
+                "doc_number": "",
+                "status": "SUBMITTED",
+                "remarks": "Pengajuan manifes keberangkatan"
+            }).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req_add_cl) as res:
+            assert res.status == 200
+        print("[TEST 11/12] Tambah Item Dokumen CIGP Baru Berhasil.")
+
+        # 12. Test Update Clearance Item (Nomor Dokumen & Status)
+        # Ambil id clearance yang baru dibuat
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc_id}") as res:
+            pdata = json.loads(res.read().decode("utf-8"))
+            bc12 = next(c for c in pdata["clearances"] if c["doc_type"] == "Outward Manifest BC 1.2")
+            cl_id = bc12["id"]
+
+        req_upd_cl = urllib.request.Request(
+            f"{base_url}/api/clearances/{cl_id}/update",
+            data=json.dumps({
+                "doc_number": "BC12-2026-009881",
+                "status": "APPROVED",
+                "remarks": "Disetujui CEISA Bea Cukai"
+            }).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req_upd_cl) as res:
+            assert res.status == 200
+            upd_res = json.loads(res.read().decode("utf-8"))
+            assert upd_res["status"] == "success"
+            assert upd_res["file_sha256"] is not None
+
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc_id}") as res:
+            pdata = json.loads(res.read().decode("utf-8"))
+            bc12_updated = next(c for c in pdata["clearances"] if c["id"] == cl_id)
+            assert bc12_updated["doc_number"] == "BC12-2026-009881"
+            assert bc12_updated["status"] == "APPROVED"
+            assert bc12_updated["approval_time"] is not None
+        print("[TEST 12/12] Update Nomor Dokumen & Status Clearance CIGP Berhasil.")
 
         print("\nSEMUA INTEGRATION TEST LULUS (100% VERIFIED)!")
 

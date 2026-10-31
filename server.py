@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from email.message import Message as WSGIHeaders
 
-from engine.db import get_db, init_db, seed_sample_data, calculate_file_sha256, log_audit
+from engine.db import get_db, init_db, seed_sample_data, calculate_file_sha256, log_audit, TABLES, drop_remote_connection
 from engine.laytime import LaytimeCalculator, parse_iso
 
 PORT = 8000
@@ -1035,16 +1035,51 @@ _application_ready = False
 _application_lock = threading.Lock()
 
 
+def _prepare_database_once():
+    """Siapkan skema + data contoh, dengan biaya minimal bila DB sudah siap.
+
+    Dulu _ensure_database_ready() selalu menjalankan init_db() +
+    seed_sample_data() penuh: 13 CREATE TABLE IF NOT EXISTS + belasan
+    SELECT COUNT + INSERT — masing-masing satu round-trip ke Turso
+    (~600 ms dari VM ini) sehingga cold start pertama mencapai ~39 dtk.
+    Sekarang cukup 2 query: daftar nama tabel dari sqlite_master, lalu
+    COUNT(*) port_calls. Bila semua tabel ada dan sudah ada port call,
+    tidak ada lagi yang dijalankan. Bila tabel belum lengkap -> init_db()
+    + seed. Bila tabel lengkap tapi kosong -> seed saja.
+    (sqlite_sequence dari AUTOINCREMENT ikut muncul di sqlite_master;
+    pemeriksaan memakai issubset sehingga tabel ekstra diabaikan.)"""
+    conn = get_db()
+    try:
+        names = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if not set(TABLES).issubset(names):
+            init_db()
+            seed_sample_data()
+            return
+        n = conn.execute("SELECT COUNT(*) FROM port_calls").fetchone()[0]
+        if n == 0:
+            seed_sample_data()
+    finally:
+        conn.close()
+
+
 def _ensure_database_ready():
-    """Cold start: siapkan skema + data contoh sekali per instance."""
+    """Cold start: siapkan skema + data contoh sekali per instance.
+
+    Bila koneksi remote putus di tengah cold start (stream hrana mati saat
+    instance idle), buang koneksi yang di-cache dan coba sekali lagi."""
     global _application_ready
     if _application_ready:
         return
     with _application_lock:
-        if not _application_ready:
-            init_db()
-            seed_sample_data()
-            _application_ready = True
+        if _application_ready:
+            return
+        try:
+            _prepare_database_once()
+        except Exception:
+            drop_remote_connection()
+            _prepare_database_once()
+        _application_ready = True
 
 
 def application(environ, start_response):
@@ -1066,6 +1101,11 @@ def application(environ, start_response):
         else:
             handler.send_json({"error": f"Metode {method} tidak didukung"}, status=405)
     except Exception:
+        # Bila koneksi remote yang di-cache sudah stale (stream hrana putus
+        # saat instance idle), request ini gagal — tapi buang dulu koneksinya
+        # supaya request berikutnya membuka koneksi baru, bukan mengulang
+        # kegagalan yang sama selamanya.
+        drop_remote_connection()
         if handler.wfile.tell() == 0:  # respons belum terkirim sama sekali
             handler.send_json({"error": "Kesalahan internal server"}, status=500)
         else:

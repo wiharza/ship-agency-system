@@ -116,6 +116,32 @@ def main():
     _check("WSGI POST close-ops tanpa SPB ditolak 400 via libsql",
            s.startswith("400"), f"({s})")
 
+    # 6. Cache koneksi remote (hanya bila URL remote + token tersedia di env).
+    #    Mode file lokal di atas sengaja TIDAK di-cache, jadi bagian ini butuh
+    #    URL remote sungguhan; tanpa itu, SKIP (bukan gagal).
+    remote_url = os.environ.get("TURSO_REMOTE_TEST_URL", "")
+    remote_token = os.environ.get("TURSO_REMOTE_TEST_TOKEN", "")
+    if remote_url and remote_token:
+        from engine.db import drop_remote_connection  # noqa
+        os.environ["TURSO_DATABASE_URL"] = remote_url
+        os.environ["TURSO_AUTH_TOKEN"] = remote_token
+        drop_remote_connection()
+        c1 = get_db()
+        c2 = get_db()
+        _check("get_db() remote dipakai ulang (objek sama)", c1 is c2)
+        c1.close()  # no-op untuk koneksi shared
+        _check("close() tidak memutus koneksi cache",
+               get_db().execute("SELECT 1").fetchone()[0] == 1)
+        drop_remote_connection()
+        c3 = get_db()
+        _check("drop_remote_connection() memaksa koneksi baru", c3 is not c1)
+        _check("koneksi baru bisa query",
+               c3.execute("SELECT COUNT(*) FROM port_calls").fetchone()[0] >= 1)
+        drop_remote_connection()
+    else:
+        print("SKIP tes cache remote: set TURSO_REMOTE_TEST_URL + "
+              "TURSO_REMOTE_TEST_TOKEN untuk mengujinya")
+
     print("\nSEMUA TES BACKEND LIBSQL LULUS!")
     return 0
 

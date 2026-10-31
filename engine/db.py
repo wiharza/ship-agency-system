@@ -19,6 +19,15 @@ except ImportError:  # lokal tanpa Turso: tetap jalan dengan sqlite3 stdlib
     _libsql = None
 
 
+# Daftar tabel skema (satu sumber kebenaran; dipakai init_db() dan
+# pemeriksaan kesiapan DB saat cold start di server.py).
+TABLES = [
+    "master_ports", "master_terminals", "master_vessels", "master_branches",
+    "master_principals", "port_calls", "port_call_charter_parties", "clearances",
+    "milestones", "sof_stoppages", "disbursements", "fda_disputes", "audit_logs",
+]
+
+
 class _Row:
     """Baris hasil query yang berperilaku seperti sqlite3.Row.
 
@@ -104,10 +113,18 @@ class _LibSQLCursor:
 
 class _LibSQLConnection:
     """Koneksi libsql yang meniru antarmuka sqlite3 yang dipakai server.py:
-    execute/cursor/commit/rollback/close + `with conn:`."""
+    execute/cursor/commit/rollback/close + `with conn:`.
 
-    def __init__(self, conn):
+    Bila `shared=True`, koneksi ini adalah koneksi remote yang di-cache
+    (dipakai ulang antar-request, lihat get_db()) dan `close()` sengaja
+    menjadi no-op: koneksi dimiliki modul, bukan pemanggil — semua handler
+    server.py memanggil conn.close() di akhir, dan close() yang sungguhan
+    akan memutus cache. Satu-satunya jalan memutus koneksi cache adalah
+    drop_remote_connection() (dipakai saat koneksi putus/stale)."""
+
+    def __init__(self, conn, shared=False):
         self._conn = conn
+        self._shared = shared
 
     def cursor(self):
         return _LibSQLCursor(self._conn.cursor())
@@ -128,6 +145,13 @@ class _LibSQLConnection:
         self._conn.rollback()
 
     def close(self):
+        if self._shared:
+            return  # dimiliki modul; lihat docstring kelas
+        self._conn.close()
+
+    def _close_real(self):
+        """Tutup koneksi betulan, termasuk bila shared (hanya untuk
+        drop_remote_connection())."""
         self._conn.close()
 
     @property
@@ -179,12 +203,54 @@ def _resolve_db_file():
 DB_FILE = _resolve_db_file()
 
 
+# Koneksi Turso remote di-cache per thread (threading.local), bukan dibuka
+# baru di tiap get_db(). Alasannya: sekali libsql.connect() ke Turso remote
+# butuh ~1,5 dtk (hangat) sampai ~7 dtk (dingin) dari VM ini, dan tiap
+# request API memanggil get_db() — jadi setiap request membayar koneksi baru.
+# Thread-local (bukan global tunggal) dipilih supaya tidak ada dua thread
+# yang memakai satu koneksi yang sama: server lokal memakai
+# ThreadingHTTPServer, dan runtime Vercel pun bisa memakai beberapa thread.
+# Mode lokal (sqlite3) dan mode file libsql tidak di-cache: connect()-nya
+# murah (file lokal) dan perilakunya harus tetap seperti sebelumnya.
+_remote_conn_local = threading.local()
+
+
+def _is_remote_url(url):
+    return (url.startswith("libsql://") or url.startswith("https://")
+            or url.startswith("http://"))
+
+
+def _connect_remote(url, token):
+    raw = _libsql.connect(url, auth_token=token)
+    conn = _LibSQLConnection(raw, shared=True)
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def drop_remote_connection():
+    """Buang koneksi Turso yang di-cache (dipakai saat koneksi putus/stale).
+
+    Aman dipanggil kapan saja: no-op bila tidak ada koneksi remote yang
+    di-cache (mode lokal / mode file libsql). Request berikutnya akan membuka
+    koneksi baru lewat get_db()."""
+    cached = getattr(_remote_conn_local, "conn", None)
+    if cached is not None:
+        try:
+            cached._close_real()
+        except Exception:
+            pass
+        _remote_conn_local.conn = None
+
+
 def get_db():
     """Koneksi database.
 
     Bila TURSO_DATABASE_URL + TURSO_AUTH_TOKEN terisi, pakai Turso (libSQL
-    remote) — data persisten dan sama untuk semua instance Vercel. Bila tidak
-    ada, pakai SQLite lokal seperti sebelumnya (tanpa dependensi tambahan).
+    remote) — data persisten dan sama untuk semua instance Vercel. Koneksi
+    remote dipakai ulang selama thread yang sama masih hidup (lihat
+    _remote_conn_local); transaksi yang tertinggal dari request sebelumnya
+    dibatalkan sebelum koneksi dipakai lagi. Bila tidak ada, pakai SQLite
+    lokal seperti sebelumnya (tanpa dependensi tambahan).
     TURSO_DATABASE_URL berupa path file biasa juga diterima: libsql dipakai
     dalam mode file lokal (berguna untuk menguji backend libsql tanpa akun
     Turso). libsql mengembalikan tuple polos tanpa row_factory, jadi koneksi
@@ -193,13 +259,25 @@ def get_db():
     url = os.environ.get("TURSO_DATABASE_URL", "").strip()
     token = os.environ.get("TURSO_AUTH_TOKEN", "").strip()
     if url and _libsql is not None:
-        if url.startswith("libsql://") or url.startswith("https://") or url.startswith("http://"):
+        if _is_remote_url(url):
             if not token:
                 raise RuntimeError(
                     "TURSO_AUTH_TOKEN wajib diisi bila TURSO_DATABASE_URL remote dipakai")
-            raw = _libsql.connect(url, auth_token=token)
-        else:
-            raw = _libsql.connect(url)
+            cached = getattr(_remote_conn_local, "conn", None)
+            if cached is not None:
+                try:
+                    # Transaksi yang tertinggal dari request sebelumnya
+                    # (mis. gagal sebelum commit) harus dibatalkan agar
+                    # tidak tercampur dengan request berikutnya.
+                    if cached.in_transaction:
+                        cached.rollback()
+                    return cached
+                except Exception:
+                    drop_remote_connection()
+            conn = _connect_remote(url, token)
+            _remote_conn_local.conn = conn
+            return conn
+        raw = _libsql.connect(url)
         conn = _LibSQLConnection(raw)
         conn.execute("PRAGMA foreign_keys = ON")
         return conn

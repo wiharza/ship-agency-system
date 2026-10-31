@@ -26,3 +26,13 @@ Catatan putusan pemilik sistem selama grilling. Setiap butir dipakai sebagai bat
 | Q20 | Data induk: Principal, Kapal, Agen, Vendor jasa, Personel, Pelabuhan + profil, Kontrak/Charter Party. |
 | Q21 | Notifikasi tiga kanal: dalam aplikasi, email, Telegram. |
 | Q22 | Bongkar/muat hanya pembatas waktu + dokumen; tidak mengelola rencana muat. |
+| Q23 | Klasifikasi kapal: dipisah sejak awal antara Kapal Asing (PKKA, BC 1.1, TPI) dan Kapal Domestik (PKK). |
+| Q24 | Ketahanan koneksi: web app online, form SOF & checklist auto-save lokal di browser mencegah data hilang. |
+| Q25 | Struktur organisasi: multi-kantor cabang; master data terpusat, operasional per cabang. |
+| Q26 | Otorisasi penutupan Port Call ganda: Dokumen/Ops (clearance fisik selesai) dan Finance (FDA direkonsiliasi). |
+| Q27 | Masa retensi data: minimal 10 tahun tanpa hapus otomatis (perlindungan sengketa charter party & audit pajak). |
+| Q28 | Handover shift: ringkasan dinamis per port call (izin pending, tugas tertunda, deadline terdekat) untuk tim 24/7. |
+| Q29 | Pelacakan modul Inaportnet: satu timeline terpadu per port call dengan tag modul (SIMPADU, SPS, BUP, dll). |
+| Q30 | Pencatatan PNBP: catat nomor aju, kode billing SIMPONI, NTPN, dan bukti bayar; tidak menghitung tarif sendiri. |
+| Q31 | Batas waktu penyusunan FDA: maksimal 30 hari kalender setelah keberangkatan kapal (ATD). |
+| Q32 | Penanganan sengketa FDA: modul dispute tracking khusus (status klaim, deadline respon, riwayat negosiasi). |

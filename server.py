@@ -62,6 +62,29 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"port_calls": rows})
             return
 
+        if path == "/api/master/ports":
+            conn = get_db()
+            c = conn.cursor()
+            c.execute("SELECT * FROM master_ports ORDER BY name")
+            ports = [dict(r) for r in c.fetchall()]
+            c.execute("SELECT * FROM master_terminals ORDER BY port_code, name")
+            terminals = [dict(r) for r in c.fetchall()]
+            c.execute("SELECT imo, name, flag, vessel_type FROM master_vessels ORDER BY name")
+            vessels = [dict(r) for r in c.fetchall()]
+            conn.close()
+
+            port_map = {}
+            for p in ports:
+                p["terminals"] = []
+                port_map[p["code"]] = p
+
+            for t in terminals:
+                if t["port_code"] in port_map:
+                    port_map[t["port_code"]]["terminals"].append(t)
+
+            self.send_json({"ports": list(port_map.values()), "vessels": vessels})
+            return
+
         if path.startswith("/api/port-calls/"):
             parts = path.strip("/").split("/")
             if len(parts) == 3:
@@ -170,6 +193,23 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
         except Exception:
             payload = {}
 
+        if path == "/api/master/terminals":
+            port_code = payload.get("port_code")
+            terminal_name = payload.get("terminal_name")
+            terminal_type = payload.get("terminal_type", "UMUM")
+            if not port_code or not terminal_name:
+                self.send_json({"error": "port_code dan terminal_name wajib diisi"}, status=400)
+                return
+            conn = get_db()
+            with conn:
+                conn.execute("""
+                INSERT OR IGNORE INTO master_terminals (port_code, name, terminal_type)
+                VALUES (?, ?, ?)
+                """, (port_code, terminal_name.strip(), terminal_type))
+            conn.close()
+            self.send_json({"status": "success", "message": f"Terminal '{terminal_name}' berhasil ditambahkan ke {port_code}"})
+            return
+
         if path == "/api/port-calls":
             # POST /api/port-calls (Tambah Port Call Baru)
             branch_id = payload.get("branch_id", "BR-JKT")
@@ -188,6 +228,19 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
 
             conn = get_db()
             c = conn.cursor()
+
+            # Validasi pencegahan typo: Port Code wajib terdaftar di master_ports
+            c.execute("SELECT code FROM master_ports WHERE code = ?", (port_code,))
+            if not c.fetchone():
+                conn.close()
+                self.send_json({"error": f"Kode pelabuhan '{port_code}' tidak terdaftar di sistem master! Pilih dari daftar baku."}, status=400)
+                return
+
+            # Pastikan terminal tersimpan di master_terminals
+            c.execute("SELECT id FROM master_terminals WHERE port_code = ? AND name = ?", (port_code, terminal_name))
+            if not c.fetchone():
+                c.execute("INSERT OR IGNORE INTO master_terminals (port_code, name, terminal_type) VALUES (?, ?, 'UMUM')", (port_code, terminal_name))
+
             # Generate ID: PC-YYYY-PORT-XXXX
             year_str = datetime.now().strftime("%Y")
             c.execute("SELECT COUNT(*) FROM port_calls WHERE id LIKE ?", (f"PC-{year_str}%",))

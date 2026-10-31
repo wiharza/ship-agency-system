@@ -629,15 +629,94 @@
       }, 3000);
     }
 
+    let cachedMasterData = null;
+
+    async function loadMasterData() {
+      try {
+        const res = await fetch('/api/master/ports');
+        cachedMasterData = await res.json();
+      } catch (e) {
+        console.error("Gagal memuat master data:", e);
+      }
+    }
+
     async function openNewPortCallModal() {
-      const imo = prompt("Masukkan Nomor IMO Kapal (contoh: 9876543 atau 9431289):", "9876543");
-      if (!imo) return;
-      const portCode = prompt("Masukkan Kode Pelabuhan (IDTPP / IDTPS / IDBTM):", "IDTPP");
-      if (!portCode) return;
-      const cargo = prompt("Jenis Muatan:", "Batu Bara (Bulk Coal)");
-      if (!cargo) return;
-      const tonnage = prompt("Tonase Muatan (MT):", "50000");
-      if (!tonnage) return;
+      if (!cachedMasterData) await loadMasterData();
+
+      const modal = document.getElementById('modal-new-pc');
+      const portSelect = document.getElementById('modal-port-select');
+      const vesselSelect = document.getElementById('modal-vessel-select');
+      
+      // Populate Ports
+      portSelect.innerHTML = (cachedMasterData.ports || []).map(p => 
+        `<option value="${p.code}">${p.code} - ${p.name} (${p.province}) [${p.inaportnet_level}]</option>`
+      ).join('');
+
+      // Populate Vessels
+      vesselSelect.innerHTML = (cachedMasterData.vessels || []).map(v => 
+        `<option value="${v.imo}" data-flag="${v.flag}">${v.name} (IMO: ${v.imo}) - [${v.flag === 'ID' ? 'DOMESTIK' : 'ASING'}]</option>`
+      ).join('');
+
+      // Default ETA: Besok jam 08:00
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      tomorrow.setHours(8, 0, 0, 0);
+      document.getElementById('modal-eta').value = tomorrow.toISOString().slice(0, 16);
+
+      onPortSelectChange();
+      modal.style.display = 'flex';
+    }
+
+    function closeNewPortCallModal() {
+      document.getElementById('modal-new-pc').style.display = 'none';
+    }
+
+    function onPortSelectChange() {
+      const portCode = document.getElementById('modal-port-select').value;
+      const termSelect = document.getElementById('modal-terminal-select');
+      const port = (cachedMasterData?.ports || []).find(p => p.code === portCode);
+
+      if (port && port.terminals && port.terminals.length > 0) {
+        let opts = port.terminals.map(t => `<option value="${t.name}">${t.name} (${t.terminal_type} - Max Draft: ${t.max_draft || '-'}m)</option>`).join('');
+        opts += `<option value="__NEW__">➕ [+ Input Terminal / Dermaga Baru...]</option>`;
+        termSelect.innerHTML = opts;
+      } else {
+        termSelect.innerHTML = `<option value="Pelabuhan Umum">Pelabuhan Umum</option><option value="__NEW__">➕ [+ Input Terminal Baru...]</option>`;
+      }
+      onTerminalSelectChange();
+    }
+
+    function onTerminalSelectChange() {
+      const termSelect = document.getElementById('modal-terminal-select');
+      const customGroup = document.getElementById('modal-custom-terminal-group');
+      if (termSelect.value === '__NEW__') {
+        customGroup.style.display = 'block';
+        document.getElementById('modal-custom-terminal-input').focus();
+      } else {
+        customGroup.style.display = 'none';
+      }
+    }
+
+    async function submitNewPortCall() {
+      const portCode = document.getElementById('modal-port-select').value;
+      const termSelect = document.getElementById('modal-terminal-select');
+      let terminalName = termSelect.value;
+      if (terminalName === '__NEW__') {
+        terminalName = document.getElementById('modal-custom-terminal-input').value.trim();
+        if (!terminalName) {
+          alert("Silakan masukkan nama terminal baru!");
+          return;
+        }
+      }
+
+      const vesselSelect = document.getElementById('modal-vessel-select');
+      const imo = vesselSelect.value;
+      const selectedOption = vesselSelect.options[vesselSelect.selectedIndex];
+      const isDomestic = selectedOption.getAttribute('data-flag') === 'ID';
+
+      const cargoName = document.getElementById('modal-cargo-name').value.trim() || 'General Cargo';
+      const cargoTonnage = parseFloat(document.getElementById('modal-cargo-tonnage').value) || 10000;
+      const eta = document.getElementById('modal-eta').value || new Date().toISOString().slice(0, 16);
 
       const res = await fetch('/api/port-calls', {
         method: 'POST',
@@ -645,13 +724,17 @@
         body: JSON.stringify({
           vessel_imo: imo,
           port_code: portCode,
-          cargo_name: cargo,
-          cargo_tonnage: parseFloat(tonnage),
-          vessel_category: imo === "9876543" ? "DOMESTIC" : "FOREIGN"
+          terminal_name: terminalName,
+          cargo_name: cargoName,
+          cargo_tonnage: cargoTonnage,
+          eta: eta.replace('T', ' '),
+          vessel_category: isDomestic ? 'DOMESTIC' : 'FOREIGN'
         })
       });
+
       const data = await res.json();
       if (data.status === 'success') {
+        closeNewPortCallModal();
         alert(data.message);
         await loadPortCalls();
         selectPortCall(data.port_call_id);
@@ -660,7 +743,63 @@
       }
     }
 
-    window.onload = loadPortCalls;
+    window.onload = () => {
+      loadPortCalls();
+      loadMasterData();
+    };
   </script>
+
+  <!-- Modal Dialog Buat Port Call Baru (Pre-determined Data) -->
+  <div id="modal-new-pc" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 9999; align-items: center; justify-content: center;">
+    <div class="card" style="width: 520px; max-width: 90vw; background: #0f172a; border: 1px solid var(--cyan); box-shadow: 0 10px 25px rgba(0,0,0,0.6); margin: 0;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h3 style="margin: 0; color: var(--cyan);">⚓ Buat Port Call Baru</h3>
+        <button class="btn btn-outline" style="padding: 2px 8px; font-size: 13px;" onclick="closeNewPortCallModal()">✕</button>
+      </div>
+
+      <div class="form-group">
+        <label>Pelabuhan (Pre-determined UN/LOCODE):</label>
+        <select id="modal-port-select" onchange="onPortSelectChange()"></select>
+        <small style="color: var(--text-muted); font-size: 11px;">Mencegah deviasi ejaan / typo kode Inaportnet & CIGP.</small>
+      </div>
+
+      <div class="form-group">
+        <label>Terminal / Dermaga / Tersus (Pre-determined):</label>
+        <select id="modal-terminal-select" onchange="onTerminalSelectChange()"></select>
+      </div>
+
+      <div id="modal-custom-terminal-group" class="form-group" style="display: none; background: rgba(6, 182, 212, 0.05); padding: 10px; border: 1px dashed var(--cyan); border-radius: 4px;">
+        <label style="color: var(--cyan); font-weight: 600;">Input Nama Terminal / Tersus Baru:</label>
+        <input type="text" id="modal-custom-terminal-input" placeholder="Misal: Tersus PT Sumber Metal Indo">
+        <small style="color: var(--text-muted); font-size: 11px;">Terminal baru akan otomatis disimpan ke master terminal pelabuhan bersangkutan.</small>
+      </div>
+
+      <div class="form-group">
+        <label>Pilih Kapal (Master Vessels):</label>
+        <select id="modal-vessel-select"></select>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1.5fr 1fr; gap: 12px;">
+        <div class="form-group">
+          <label>Jenis Muatan:</label>
+          <input type="text" id="modal-cargo-name" value="Batu Bara (Bulk Coal)">
+        </div>
+        <div class="form-group">
+          <label>Tonase (MT):</label>
+          <input type="number" id="modal-cargo-tonnage" value="50000">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Estimasi Kedatangan (ETA):</label>
+        <input type="datetime-local" id="modal-eta">
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;">
+        <button class="btn btn-outline" onclick="closeNewPortCallModal()">Batal</button>
+        <button class="btn btn-cyan" onclick="submitNewPortCall()">Simpan Port Call</button>
+      </div>
+    </div>
+  </div>
 </body>
 </html>

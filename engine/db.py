@@ -37,6 +37,19 @@ def init_db():
         )
         """)
 
+        # Master Terminal / Dermaga / Tersus
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS master_terminals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            port_code TEXT NOT NULL,
+            name TEXT NOT NULL,
+            terminal_type TEXT DEFAULT 'UMUM', -- UMUM, PETIKEMAS, TERSUS, TUKS, CURAH
+            max_draft REAL,
+            FOREIGN KEY (port_code) REFERENCES master_ports (code),
+            UNIQUE(port_code, name)
+        )
+        """)
+
         # Master Kapal
         conn.execute("""
         CREATE TABLE IF NOT EXISTS master_vessels (
@@ -221,6 +234,36 @@ def seed_sample_data():
     """Mengisi data awal master dan port call pengujian jika kosong."""
     conn = get_db()
     cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM master_terminals")
+    if cursor.fetchone()[0] == 0:
+        with conn:
+            conn.execute("""
+            INSERT OR IGNORE INTO master_ports VALUES 
+            ('IDTPP', 'Tanjung Priok', 'DKI Jakarta', 'IDTPP', 'Kelas Utama', 'VHF Ch 12/16', 14.0, 'Pelabuhan Utama Nasional'),
+            ('IDTPS', 'Tanjung Perak', 'Jawa Timur', 'IDTPS', 'Kelas Utama', 'VHF Ch 14/16', 12.5, 'Gerbang Logistik Timur'),
+            ('IDKOL', 'Kolonodale', 'Sulawesi Tengah', 'IDKOL', 'Kelas III (KUPP)', 'VHF Ch 16', 11.0, 'Pelabuhan Tambang Nikel & Curah'),
+            ('IDBTM', 'Batu Ampar', 'Kepulauan Riau', 'IDBTM', 'Kelas I', 'VHF Ch 16/71', 13.0, 'Kawasan Perbatasan & FTZ')
+            """)
+
+            conn.execute("""
+            INSERT INTO master_terminals (port_code, name, terminal_type, max_draft) VALUES
+            ('IDTPP', 'JICT (Jakarta Int. Container Terminal)', 'PETIKEMAS', 14.0),
+            ('IDTPP', 'TPK Koja', 'PETIKEMAS', 13.5),
+            ('IDTPP', 'NPCT1 (New Priok Container Terminal 1)', 'PETIKEMAS', 16.0),
+            ('IDTPP', 'Dermaga 101-106 (Terminal Jamrud/Umum)', 'UMUM', 10.5),
+            ('IDTPP', 'Terminal Curah Kering Bogasari', 'CURAH', 12.0),
+            ('IDTPS', 'Terminal Petikemas Surabaya (TPS)', 'PETIKEMAS', 12.5),
+            ('IDTPS', 'Terminal Teluk Lamong (TTL)', 'PETIKEMAS', 14.0),
+            ('IDTPS', 'Terminal Nilam & Mirah', 'UMUM', 9.5),
+            ('IDTPS', 'Terminal Jamrud Barat/Utara', 'CURAH', 10.5),
+            ('IDKOL', 'Pelabuhan Umum KUPP Kolonodale', 'UMUM', 9.0),
+            ('IDKOL', 'Tersus PT COR Industri Indonesia', 'TERSUS', 11.5),
+            ('IDKOL', 'TUKS PT Bumanik', 'TUKS', 10.0),
+            ('IDBTM', 'Dermaga Utara Batu Ampar', 'UMUM', 12.0),
+            ('IDBTM', 'Terminal Petikemas Batu Ampar', 'PETIKEMAS', 13.0),
+            ('IDBTM', 'Tersus Kabil Integrated Port', 'TERSUS', 12.5)
+            """)
+
     cursor.execute("SELECT COUNT(*) FROM master_ports")
     if cursor.fetchone()[0] == 0:
         with conn:
@@ -229,7 +272,28 @@ def seed_sample_data():
             INSERT INTO master_ports VALUES 
             ('IDTPP', 'Tanjung Priok', 'DKI Jakarta', 'IDTPP', 'Kelas Utama', 'VHF Ch 12/16', 14.0, 'Pelabuhan Utama Nasional'),
             ('IDTPS', 'Tanjung Perak', 'Jawa Timur', 'IDTPS', 'Kelas Utama', 'VHF Ch 14/16', 12.5, 'Gerbang Logistik Timur'),
+            ('IDKOL', 'Kolonodale', 'Sulawesi Tengah', 'IDKOL', 'Kelas III (KUPP)', 'VHF Ch 16', 11.0, 'Pelabuhan Tambang Nikel & Curah'),
             ('IDBTM', 'Batu Ampar', 'Kepulauan Riau', 'IDBTM', 'Kelas I', 'VHF Ch 16/71', 13.0, 'Kawasan Perbatasan & FTZ')
+            """)
+
+            # Pre-determined Terminals / Jetties
+            conn.execute("""
+            INSERT INTO master_terminals (port_code, name, terminal_type, max_draft) VALUES
+            ('IDTPP', 'JICT (Jakarta Int. Container Terminal)', 'PETIKEMAS', 14.0),
+            ('IDTPP', 'TPK Koja', 'PETIKEMAS', 13.5),
+            ('IDTPP', 'NPCT1 (New Priok Container Terminal 1)', 'PETIKEMAS', 16.0),
+            ('IDTPP', 'Dermaga 101-106 (Terminal Jamrud/Umum)', 'UMUM', 10.5),
+            ('IDTPP', 'Terminal Curah Kering Bogasari', 'CURAH', 12.0),
+            ('IDTPS', 'Terminal Petikemas Surabaya (TPS)', 'PETIKEMAS', 12.5),
+            ('IDTPS', 'Terminal Teluk Lamong (TTL)', 'PETIKEMAS', 14.0),
+            ('IDTPS', 'Terminal Nilam & Mirah', 'UMUM', 9.5),
+            ('IDTPS', 'Terminal Jamrud Barat/Utara', 'CURAH', 10.5),
+            ('IDKOL', 'Pelabuhan Umum KUPP Kolonodale', 'UMUM', 9.0),
+            ('IDKOL', 'Tersus PT COR Industri Indonesia', 'TERSUS', 11.5),
+            ('IDKOL', 'TUKS PT Bumanik', 'TUKS', 10.0),
+            ('IDBTM', 'Dermaga Utara Batu Ampar', 'UMUM', 12.0),
+            ('IDBTM', 'Terminal Petikemas Batu Ampar', 'PETIKEMAS', 13.0),
+            ('IDBTM', 'Tersus Kabil Integrated Port', 'TERSUS', 12.5)
             """)
 
             # Branches

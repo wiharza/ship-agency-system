@@ -135,6 +135,33 @@ def test_integration():
             assert "RINGKASAN HANDOVER SHIFT" in ho["handover_text"]
         print("[TEST 8/8] GET Dynamic Handover Shift Berhasil.")
 
+        # 9. Test Master Ports & Pre-determined List (Typo Prevention)
+        with urllib.request.urlopen(f"{base_url}/api/master/ports") as res:
+            assert res.status == 200
+            mdata = json.loads(res.read().decode("utf-8"))
+            assert any(p["code"] == "IDTPP" for p in mdata["ports"])
+            assert any(p["code"] == "IDKOL" for p in mdata["ports"])
+            kol = next(p for p in mdata["ports"] if p["code"] == "IDKOL")
+            assert len(kol["terminals"]) >= 2
+        print("[TEST 9/10] Master Ports & Terminals Pre-determined List Berhasil dimuat.")
+
+        # 10. Test Typo Prevention Barrier (Invalid port_code ditolak 400)
+        req_invalid = urllib.request.Request(
+            f"{base_url}/api/port-calls",
+            data=json.dumps({
+                "vessel_imo": "9876543",
+                "port_code": "IDTYPO99", # Kode salah ketik
+                "terminal_name": "Terminal Test"
+            }).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        try:
+            urllib.request.urlopen(req_invalid)
+            assert False, "Port code typo/tidak terdaftar harus ditolak 400"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+        print("[TEST 10/10] Typo Prevention Barrier Berhasil (Kode pelabuhan salah ditolak 400).")
+
         print("\nSEMUA INTEGRATION TEST LULUS (100% VERIFIED)!")
 
     finally:

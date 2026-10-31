@@ -22,7 +22,11 @@ TEST_PORT = 8999
 
 
 def test_integration():
-    from engine.db import get_db
+    from engine.db import get_db, init_db, seed_sample_data
+    # Siapkan skema + data contoh dulu: sejak agency.db tidak lagi di-commit,
+    # clone baru (dan CI) tidak punya DB — init_db() membuatnya dari kode.
+    init_db()
+    seed_sample_data()
     # Reset status sample port call agar test idempotent
     conn = get_db()
     with conn:

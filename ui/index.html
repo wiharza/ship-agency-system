@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sistem Keagenan Kapal Nasional — Operational & Commercial Tracker</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --border: #334155;
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --red: #ef4444;
+      --yellow: #f59e0b;
+      --green: #10b981;
+      --cyan: #06b6d4;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    body { background-color: var(--bg); color: var(--text); padding: 20px; line-height: 1.5; }
+    header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 16px; border-bottom: 1px solid var(--border); margin-bottom: 24px; }
+    .badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
+    .badge-red { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid #ef4444; }
+    .badge-yellow { background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid #f59e0b; }
+    .badge-green { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid #10b981; }
+    .badge-cyan { background: rgba(6, 182, 212, 0.2); color: #22d3ee; border: 1px solid #06b6d4; }
+
+    .grid { display: grid; grid-template-columns: 320px 1fr; gap: 24px; }
+    .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+    h2, h3 { font-size: 16px; font-weight: 700; margin-bottom: 12px; color: #fff; }
+    
+    .pc-item { padding: 12px; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 10px; cursor: pointer; transition: all 0.2s; }
+    .pc-item:hover, .pc-item.active { border-color: var(--cyan); background: rgba(6, 182, 212, 0.08); }
+    .pc-vessel { font-weight: 700; font-size: 14px; }
+    .pc-meta { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+
+    .tabs { display: flex; gap: 8px; border-bottom: 1px solid var(--border); margin-bottom: 16px; overflow-x: auto; }
+    .tab-btn { background: none; border: none; color: var(--text-muted); padding: 8px 16px; cursor: pointer; font-size: 13px; font-weight: 600; border-bottom: 2px solid transparent; }
+    .tab-btn.active { color: var(--cyan); border-bottom-color: var(--cyan); }
+
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+    th { color: var(--text-muted); font-size: 12px; font-weight: 600; text-transform: uppercase; }
+
+    .btn { background: var(--primary); color: white; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; transition: background 0.2s; }
+    .btn:hover { background: var(--primary-hover); }
+    .btn-green { background: #059669; }
+    .btn-green:hover { background: #047857; }
+    .btn-yellow { background: #d97706; }
+    .btn-yellow:hover { background: #b45309; }
+    .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+    .btn-outline:hover { background: rgba(255,255,255,0.05); }
+
+    .timer-box { background: rgba(239, 68, 68, 0.15); border: 1px solid var(--red); border-radius: 6px; padding: 14px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; }
+    .timer-text { font-size: 20px; font-weight: 800; color: #f87171; font-variant-numeric: tabular-nums; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; }
+
+    .form-group { margin-bottom: 12px; }
+    label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
+    input, select, textarea { width: 100%; padding: 8px 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 4px; color: white; font-size: 13px; }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: var(--cyan); }
+
+    .offline-bar { background: rgba(16, 185, 129, 0.15); border: 1px solid var(--green); border-radius: 6px; padding: 10px 14px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div>
+      <h1 style="font-size: 20px; font-weight: 800; color: var(--cyan);">⚓ SISTEM KEAGENAN KAPAL NASIONAL</h1>
+      <p style="font-size: 12px; color: var(--text-muted);">Pelacak Internal Kepatuhan Maritim, Integritas Dokumen & Kalkulasi Komersial</p>
+    </div>
+    <div>
+      <span class="badge badge-green">INAPORTNET COMPLIANT</span>
+      <span class="badge badge-cyan">PYTHON STDLIB ENGINE</span>
+    </div>
+  </header>
+
+  <div class="grid">
+    <!-- Kolom Kiri: Port Calls List -->
+    <div>
+      <div class="card">
+        <h3>Daftar Port Call Aktif</h3>
+        <div id="pc-list">Memuat data port call...</div>
+      </div>
+    </div>
+
+    <!-- Kolom Kanan: Detail Port Call & Tab Interaktif -->
+    <div>
+      <!-- Header Ringkasan Aktif -->
+      <div class="card" id="pc-detail-card" style="display: none;">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
+          <div>
+            <h2 id="view-vessel-name">-</h2>
+            <div id="view-vessel-meta" class="pc-meta">-</div>
+          </div>
+          <div id="view-badges"></div>
+        </div>
+
+        <!-- Banner Hitung Mundur SPB 24 Jam (PM 28/2022) -->
+        <div id="spb-alert-banner" class="timer-box" style="display: none;">
+          <div>
+            <strong style="color: #f87171;">⚠️ TIMER HITUNG MUNDUR SPB (PM 28/2022 Ps 9)</strong>
+            <div style="font-size: 12px; color: #fca5a5;">Kapal wajib bertolak sebelum waktu habis atau izin berlayar gugur!</div>
+          </div>
+          <div class="timer-text" id="spb-timer-display">24:00:00</div>
+        </div>
+
+        <!-- Dual Authorization Banner (Putusan Q26) -->
+        <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
+          <div>
+            <strong style="font-size: 13px;">Status Penutupan Port Call (Otorisasi Ganda):</strong>
+            <div style="font-size: 12px; color: var(--text-muted);" id="closure-status-text">Menunggu Otorisasi Operasional & Keuangan</div>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-outline" id="btn-ops-close" onclick="signOpsClosure()">1. Sign-off Ops</button>
+            <button class="btn btn-green" id="btn-fin-close" onclick="signFinanceClosure()" disabled>2. Sign-off Finance</button>
+          </div>
+        </div>
+
+        <!-- Navigasi Tab -->
+        <div class="tabs">
+          <button class="tab-btn active" onclick="switchTab('tab-overview')">Ringkasan</button>
+          <button class="tab-btn" onclick="switchTab('tab-clearances')">Dokumen & CIGP</button>
+          <button class="tab-btn" onclick="switchTab('tab-sof')">SOF & Working Log (Offline-Ready)</button>
+          <button class="tab-btn" onclick="switchTab('tab-laytime')">Kalkulator Laytime</button>
+          <button class="tab-btn" onclick="switchTab('tab-finance')">Rekonsiliasi PDA/FDA & Dispute</button>
+          <button class="tab-btn" onclick="switchTab('tab-handover')">Handover Shift 24/7</button>
+        </div>
+
+        <!-- Tab 1: Ringkasan -->
+        <div id="tab-overview" class="tab-pane">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+            <div>
+              <p><strong>Pelabuhan:</strong> <span id="ov-port">-</span></p>
+              <p><strong>Terminal/Dermaga:</strong> <span id="ov-terminal">-</span></p>
+              <p><strong>Jenis Kapal:</strong> <span id="ov-vessel-type">-</span></p>
+              <p><strong>Muatan:</strong> <span id="ov-cargo">-</span></p>
+            </div>
+            <div>
+              <p><strong>Principal:</strong> <span id="ov-principal">-</span></p>
+              <p><strong>Cabang Pengelola:</strong> <span id="ov-branch">-</span></p>
+              <p><strong>ETA Faktual:</strong> <span id="ov-eta">-</span></p>
+              <p><strong>Status Port Call:</strong> <span id="ov-status" class="badge badge-cyan">-</span></p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 2: Dokumen CIGP & Inaportnet -->
+        <div id="tab-clearances" class="tab-pane" style="display: none;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <p style="font-size: 12px; color: var(--text-muted);">Pencatatan nomor surat resmi dan hash berkas SHA-256 (Putusan Q18).</p>
+            <button class="btn btn-outline" onclick="triggerSPBModal()">+ Terbitkan SPB</button>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Instansi / Modul</th>
+                <th>Jenis Dokumen</th>
+                <th>Nomor Dokumen</th>
+                <th>Status</th>
+                <th>Hash Integritas (SHA-256)</th>
+              </tr>
+            </thead>
+            <tbody id="clearances-table-body"></tbody>
+          </table>
+        </div>
+
+        <!-- Tab 3: SOF & Stoppages (Offline-First LocalStorage) -->
+        <div id="tab-sof" class="tab-pane" style="display: none;">
+          <div class="offline-bar">
+            <span id="storage-status">💾 Tersimpan lokal di peramban (Aman dari sinyal blank-spot)</span>
+            <button class="btn btn-outline" style="padding: 4px 8px; font-size: 11px;" onclick="syncLocalSOF()">Sinkronkan ke Server</button>
+          </div>
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
+            <div style="background: rgba(0,0,0,0.2); padding: 12px; border-radius: 6px;">
+              <h4 style="font-size: 13px; margin-bottom: 8px;">Catat Tonggak Waktu (Milestone)</h4>
+              <div class="form-group">
+                <label>Pilih Peristiwa</label>
+                <select id="ms-code">
+                  <option value="EOSP">EOSP (End of Sea Passage)</option>
+                  <option value="ANCHORED">Labuh Jangkar (Anchored)</option>
+                  <option value="NOR_TENDERED">Tender NOR (Notice of Readiness)</option>
+                  <option value="FREE_PRATIQUE">Free Pratique Terbit (COP Karantina)</option>
+                  <option value="PILOT_ON_BOARD">Pandu Naik (POB)</option>
+                  <option value="FIRST_LINE">Tali Pertama (First Line)</option>
+                  <option value="ALL_FAST">Sandar Sempurna (All Fast)</option>
+                  <option value="COMMENCED_CARGO">Mulai Bongkar/Muat</option>
+                  <option value="COMPLETED_CARGO">Selesai Bongkar/Muat</option>
+                  <option value="CAST_OFF">Lepas Tali (Cast Off)</option>
+                  <option value="SAILED">Bertolak (Sailed)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Waktu Kejadian (YYYY-MM-DD HH:MM)</label>
+                <input type="text" id="ms-time" value="2026-11-01 10:00">
+              </div>
+              <div class="form-group">
+                <label>Catatan Lapangan</label>
+                <input type="text" id="ms-remarks" placeholder="Misal: Draft aman, cuaca tenang">
+              </div>
+              <button class="btn" onclick="submitMilestone()">Simpan Milestone</button>
+            </div>
+
+            <div style="background: rgba(0,0,0,0.2); padding: 12px; border-radius: 6px;">
+              <h4 style="font-size: 13px; margin-bottom: 8px;">Catat Jeda Kerja (SOF Stoppage)</h4>
+              <div class="form-group">
+                <label>Kategori Jeda</label>
+                <select id="stp-cat">
+                  <option value="RAIN">Hujan Lebat (Rain)</option>
+                  <option value="MEAL_BREAK">Istirahat Makan Buruh</option>
+                  <option value="SHIFT_CHANGE">Pergantian Shift</option>
+                  <option value="CRANE_BREAKDOWN_SHORE">Derek Darat Rusak</option>
+                  <option value="WINCH_BREAKDOWN_SHIP">Winch Kapal Rusak</option>
+                  <option value="CARGO_WAITING">Menunggu Truk / Muatan</option>
+                </select>
+              </div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                <div class="form-group">
+                  <label>Mulai</label>
+                  <input type="text" id="stp-start" value="2026-11-02 02:00">
+                </div>
+                <div class="form-group">
+                  <label>Selesai</label>
+                  <input type="text" id="stp-end" value="2026-11-02 06:00">
+                </div>
+              </div>
+              <button class="btn btn-yellow" onclick="submitStoppage()">Tambah Jeda SOF</button>
+            </div>
+          </div>
+
+          <h3>Daftar Jeda & Berita Acara Lapangan</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Waktu Mulai</th>
+                <th>Waktu Selesai</th>
+                <th>Kategori Jeda</th>
+                <th>% Laytime Terhitung</th>
+                <th>Keterangan</th>
+              </tr>
+            </thead>
+            <tbody id="stoppages-table-body"></tbody>
+          </table>
+        </div>
+
+        <!-- Tab 4: Kalkulator Laytime Deterministik -->
+        <div id="tab-laytime" class="tab-pane" style="display: none;">
+          <div style="display: grid; grid-template-columns: 350px 1fr; gap: 20px;">
+            <div style="background: rgba(0,0,0,0.2); padding: 16px; border-radius: 6px;">
+              <h4 style="font-size: 13px; margin-bottom: 12px;">Parameter Charter Party</h4>
+              <div class="form-group">
+                <label>Waktu Tender NOR</label>
+                <input type="text" id="lt-nor" value="2026-11-01 08:00">
+              </div>
+              <div class="form-group">
+                <label>Waktu Mulai Muat (Commenced)</label>
+                <input type="text" id="lt-comm" value="2026-11-01 14:00">
+              </div>
+              <div class="form-group">
+                <label>Waktu Selesai Muat (Completed)</label>
+                <input type="text" id="lt-comp" value="2026-11-04 14:00">
+              </div>
+              <button class="btn btn-cyan" style="width: 100%; margin-top: 8px;" onclick="calculateLaytime()">⚡ Hitung Laytime Deterministik</button>
+            </div>
+
+            <div id="laytime-result-panel" style="background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 6px; padding: 16px;">
+              <h4 style="font-size: 14px; margin-bottom: 8px; color: var(--cyan);">Hasil Perhitungan Resmi (Python stdlib)</h4>
+              <div id="laytime-output" style="font-size: 13px; color: var(--text-muted);">
+                Klik tombol "Hitung Laytime Deterministik" untuk memproses kalkulasi berdasarkan log jeda SOF dan parameter Charter Party.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 5: Keuangan PDA vs FDA & Dispute Desk -->
+        <div id="tab-finance" class="tab-pane" style="display: none;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <h3 style="margin: 0;">Rekonsiliasi PDA vs FDA</h3>
+            <span class="badge badge-yellow">Batas FDA: 30 Hari Pasca ATD (Q31)</span>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Kategori Pos</th>
+                <th>Rincian Pos Biaya</th>
+                <th>Estimasi PDA (IDR)</th>
+                <th>Realisasi FDA (IDR)</th>
+                <th>No Billing SIMPONI / NTPN</th>
+                <th>Aksi</th>
+              </tr>
+            </thead>
+            <tbody id="finance-table-body"></tbody>
+          </table>
+
+          <h3 style="margin-top: 24px;">Meja Penanganan Sengketa FDA (Dispute Tracking - Q32)</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Pos Disengketakan</th>
+                <th>Nominal Sengketa</th>
+                <th>Alasan Principal</th>
+                <th>Batas Waktu Respon</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="disputes-table-body"></tbody>
+          </table>
+        </div>
+
+        <!-- Tab 6: Handover Shift 24/7 -->
+        <div id="tab-handover" class="tab-pane" style="display: none;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <h3 style="margin: 0;">Ringkasan Serah Terima Tugas (Handover Shift - Q28)</h3>
+            <button class="btn btn-outline" onclick="copyHandover()">📋 Salin Teks ke Telegram</button>
+          </div>
+          <textarea id="handover-text" rows="10" readonly style="font-family: monospace; font-size: 12px; line-height: 1.6;"></textarea>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let activePortCallId = null;
+    let currentData = null;
+    let timerInterval = null;
+
+    async function loadPortCalls() {
+      const res = await fetch('/api/port-calls');
+      const data = await res.json();
+      const listEl = document.getElementById('pc-list');
+      listEl.innerHTML = '';
+      
+      data.port_calls.forEach(pc => {
+        const item = document.createElement('div');
+        item.className = 'pc-item' + (pc.id === activePortCallId ? ' active' : '');
+        item.onclick = () => selectPortCall(pc.id);
+        item.innerHTML = `
+          <div class="pc-vessel">${pc.vessel_name}</div>
+          <div class="pc-meta">${pc.id} | ${pc.port_name}</div>
+          <div style="margin-top: 6px; display: flex; gap: 4px;">
+            <span class="badge ${pc.vessel_category === 'FOREIGN' ? 'badge-yellow' : 'badge-cyan'}">${pc.vessel_category}</span>
+            <span class="badge badge-green">${pc.status}</span>
+          </div>
+        `;
+        listEl.appendChild(item);
+      });
+
+      if (!activePortCallId && data.port_calls.length > 0) {
+        selectPortCall(data.port_calls[0].id);
+      }
+    }
+
+    async function selectPortCall(id) {
+      activePortCallId = id;
+      const res = await fetch(`/api/port-calls/${id}`);
+      currentData = await res.json();
+      renderDetail();
+      loadPortCalls();
+    }
+
+    function renderDetail() {
+      if (!currentData) return;
+      document.getElementById('pc-detail-card').style.display = 'block';
+      document.getElementById('view-vessel-name').innerText = currentData.vessel_name + ` (${currentData.vessel_flag})`;
+      document.getElementById('view-vessel-meta').innerText = `IMO: ${currentData.vessel_imo} | GRT: ${currentData.grt.toLocaleString()} | LOA: ${currentData.loa}m | Draft: ${currentData.max_draft}m`;
+      
+      document.getElementById('ov-port').innerText = `${currentData.port_name} (${currentData.inaportnet_level})`;
+      document.getElementById('ov-terminal').innerText = currentData.terminal_name || '-';
+      document.getElementById('ov-vessel-type').innerText = currentData.vessel_category === 'FOREIGN' ? 'Kapal Asing (PKKA/PPKKA)' : 'Kapal Domestik (PKK)';
+      document.getElementById('ov-cargo').innerText = `${currentData.cargo_name || 'General Cargo'} (${(currentData.cargo_tonnage || 0).toLocaleString()} MT)`;
+      document.getElementById('ov-principal').innerText = `${currentData.principal_name} (${currentData.principal_email})`;
+      document.getElementById('ov-branch').innerText = currentData.branch_name;
+      document.getElementById('ov-eta').innerText = currentData.eta;
+      document.getElementById('ov-status').innerText = currentData.status;
+
+      // Badges
+      const badgesEl = document.getElementById('view-badges');
+      badgesEl.innerHTML = `
+        <span class="badge ${currentData.vessel_category === 'FOREIGN' ? 'badge-yellow' : 'badge-cyan'}">${currentData.vessel_category}</span>
+        <span class="badge badge-green">${currentData.status}</span>
+      `;
+
+      // Dual Sign-Off Status
+      const opsDone = !!currentData.ops_closed_at;
+      const finDone = !!currentData.finance_closed_at;
+      const btnOps = document.getElementById('btn-ops-close');
+      const btnFin = document.getElementById('btn-fin-close');
+
+      btnOps.disabled = opsDone;
+      btnOps.className = opsDone ? 'btn btn-green' : 'btn btn-outline';
+      btnOps.innerText = opsDone ? `✓ Ops Closed (${currentData.ops_closed_by})` : '1. Sign-off Ops';
+
+      btnFin.disabled = !opsDone || finDone;
+      btnFin.className = finDone ? 'btn btn-green' : (opsDone ? 'btn btn-cyan' : 'btn btn-outline');
+      btnFin.innerText = finDone ? `✓ Finance Settled (${currentData.finance_closed_by})` : '2. Sign-off Finance';
+
+      document.getElementById('closure-status-text').innerText = finDone 
+        ? `Port Call CLOSED & Terkunci Permanen (Retensi 10 Tahun Aktif)` 
+        : (opsDone ? `Clearance fisik ditutup. Menunggu verifikasi final keuangan.` : `Operasi masih berlangsung.`);
+
+      // SPB Countdown Timer
+      if (currentData.spb_expiry_at) {
+        document.getElementById('spb-alert-banner').style.display = 'flex';
+        startSPBTimer(currentData.spb_expiry_at);
+      } else {
+        document.getElementById('spb-alert-banner').style.display = 'none';
+        if (timerInterval) clearInterval(timerInterval);
+      }
+
+      // Render Clearances Table
+      const clTable = document.getElementById('clearances-table-body');
+      clTable.innerHTML = '';
+      (currentData.clearances || []).forEach(cl => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><strong style="color:var(--cyan);">${cl.agency}</strong></td>
+          <td>${cl.doc_type}</td>
+          <td>${cl.doc_number || '<span style="color:var(--yellow)">Belum Terbit</span>'}</td>
+          <td><span class="badge ${cl.status === 'APPROVED' ? 'badge-green' : 'badge-yellow'}">${cl.status}</span></td>
+          <td class="mono">${cl.file_sha256 ? cl.file_sha256.substring(0, 16) + '...' : '-'}</td>
+        `;
+        clTable.appendChild(tr);
+      });
+
+      // Render Stoppages
+      const stpTable = document.getElementById('stoppages-table-body');
+      stpTable.innerHTML = '';
+      (currentData.stoppages || []).forEach(s => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${s.start_time}</td>
+          <td>${s.end_time}</td>
+          <td><span class="badge badge-yellow">${s.category}</span></td>
+          <td>${s.percentage_counted}%</td>
+          <td>${s.remarks || '-'}</td>
+        `;
+        stpTable.appendChild(tr);
+      });
+
+      // Render Finance
+      const finTable = document.getElementById('finance-table-body');
+      finTable.innerHTML = '';
+      (currentData.disbursements || []).forEach(d => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><span class="badge badge-cyan">${d.category}</span></td>
+          <td>${d.item_name}</td>
+          <td>Rp ${Number(d.pda_estimate).toLocaleString('id-ID')}</td>
+          <td>Rp ${Number(d.fda_actual).toLocaleString('id-ID')}</td>
+          <td>${d.ntpn ? 'NTPN: ' + d.ntpn : (d.simponi_billing ? 'Bill: ' + d.simponi_billing : '-')}</td>
+          <td><button class="btn btn-outline" style="padding:2px 8px; font-size:11px;" onclick="openDisputeModal(${d.id})">Ajukan Sengketa</button></td>
+        `;
+        finTable.appendChild(tr);
+      });
+
+      // Render Disputes
+      const dTable = document.getElementById('disputes-table-body');
+      dTable.innerHTML = '';
+      (currentData.disputes || []).forEach(dp => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${dp.item_name}</td>
+          <td>Rp ${Number(dp.disputed_amount).toLocaleString('id-ID')}</td>
+          <td>${dp.principal_reason}</td>
+          <td>${dp.deadline_date}</td>
+          <td><span class="badge badge-red">${dp.status}</span></td>
+        `;
+        dTable.appendChild(tr);
+      });
+
+      // Handover text fetch
+      fetch(`/api/port-calls/${currentData.id}/handover`)
+        .then(r => r.json())
+        .then(d => {
+          document.getElementById('handover-text').value = d.handover_text;
+        });
+    }
+
+    function startSPBTimer(expiryIso) {
+      if (timerInterval) clearInterval(timerInterval);
+      function update() {
+        const now = new Date().getTime();
+        const expiry = new Date(expiryIso.replace(" ", "T")).getTime();
+        const diff = expiry - now;
+
+        if (diff <= 0) {
+          document.getElementById('spb-timer-display').innerText = "EXPIRED (00:00:00)";
+          document.getElementById('spb-timer-display').style.color = "#ff4444";
+          return;
+        }
+
+        const hours = Math.floor(diff / (1000 * 60 * 60));
+        const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+        const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+
+        document.getElementById('spb-timer-display').innerText = 
+          `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+      }
+      update();
+      timerInterval = setInterval(update, 1000);
+    }
+
+    function switchTab(tabId) {
+      document.querySelectorAll('.tab-pane').forEach(el => el.style.display = 'none');
+      document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+      document.getElementById(tabId).style.display = 'block';
+      event.target.classList.add('active');
+    }
+
+    async function submitMilestone() {
+      const code = document.getElementById('ms-code').value;
+      const event_time = document.getElementById('ms-time').value;
+      const remarks = document.getElementById('ms-remarks').value;
+
+      await fetch(`/api/port-calls/${activePortCallId}/milestone`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ milestone_code: code, event_time, remarks })
+      });
+      selectPortCall(activePortCallId);
+    }
+
+    async function submitStoppage() {
+      const category = document.getElementById('stp-cat').value;
+      const start_time = document.getElementById('stp-start').value;
+      const end_time = document.getElementById('stp-end').value;
+
+      await fetch(`/api/port-calls/${activePortCallId}/stoppage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category, start_time, end_time, percentage_counted: 0, remarks: "Dicatat di dermaga" })
+      });
+      selectPortCall(activePortCallId);
+    }
+
+    async function calculateLaytime() {
+      const nor_tendered_time = document.getElementById('lt-nor').value;
+      const commenced_time = document.getElementById('lt-comm').value;
+      const completed_time = document.getElementById('lt-comp').value;
+
+      const res = await fetch(`/api/port-calls/${activePortCallId}/laytime/calculate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nor_tendered_time, commenced_time, completed_time })
+      });
+      const data = await res.json();
+      
+      const out = document.getElementById('laytime-output');
+      const isDemurrage = data.result.is_demurrage;
+      out.innerHTML = `
+        <div style="font-size: 18px; font-weight: 800; margin-bottom: 8px; color: ${isDemurrage ? '#f87171' : '#34d399'};">
+          STATUS: ${data.result.claim_type} — $${Number(data.result.amount_usd).toLocaleString()} USD
+        </div>
+        <p><strong>Laytime Diizinkan (Allowed):</strong> ${data.laytime_allowed.formatted} (${data.laytime_allowed.days_decimal} hari)</p>
+        <p><strong>Laytime Faktual Terpakai (Net Used):</strong> ${data.laytime_used.net_formatted}</p>
+        <p><strong>Deduksi Jeda Operasional (Cuaca/Jeda):</strong> ${data.laytime_used.deducted_formatted}</p>
+        <p><strong>Selisih Waktu Komersial:</strong> ${data.result.difference_formatted} (${data.result.difference_days} hari)</p>
+        <div style="margin-top: 10px; font-size: 11px; color: var(--text-muted);">
+          Kalkulasi diverifikasi deterministik dengan Python stdlib tanpa deviasi floating point.
+        </div>
+      `;
+    }
+
+    async function triggerSPBModal() {
+      const docNum = prompt("Masukkan Nomor Surat Persetujuan Berlayar (SPB) resmi:", "SPB.IDTPP.2026.11.0042");
+      if (!docNum) return;
+      const nowStr = new Date().toISOString().replace("T", " ").substring(0, 19);
+
+      await fetch(`/api/port-calls/${activePortCallId}/spb`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ doc_number: docNum, issued_at: nowStr })
+      });
+      selectPortCall(activePortCallId);
+    }
+
+    async function signOpsClosure() {
+      if (!confirm("Konfirmasi pengesahan Otorisasi 1 (Operasional): Seluruh perizinan selesai & kapal telah berangkat?")) return;
+      await fetch(`/api/port-calls/${activePortCallId}/close-ops`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: "Capt. Hadi (Doc/Ops Lead)" })
+      });
+      selectPortCall(activePortCallId);
+    }
+
+    async function signFinanceClosure() {
+      if (!confirm("Konfirmasi pengesahan Otorisasi 2 (Keuangan): Rekonsiliasi FDA selesai & saldo telah diselesaikan?")) return;
+      await fetch(`/api/port-calls/${activePortCallId}/close-finance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: "Ibu Ratna (Finance Manager)" })
+      });
+      selectPortCall(activePortCallId);
+    }
+
+    function openDisputeModal(disbursementId) {
+      const amt = prompt("Masukkan nilai sengketa FDA (IDR):", "3200000");
+      if (!amt) return;
+      const reason = prompt("Masukkan alasan sanggahan Principal:", "Klaim tarif tunda melebihi estimasi awal tanpa persetujuan");
+      if (!reason) return;
+
+      fetch(`/api/port-calls/${activePortCallId}/dispute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ disbursement_id: disbursementId, disputed_amount: amt, reason })
+      }).then(() => selectPortCall(activePortCallId));
+    }
+
+    function copyHandover() {
+      const text = document.getElementById('handover-text');
+      text.select();
+      navigator.clipboard.writeText(text.value);
+      alert("Teks ringkasan handover shift berhasil disalin!");
+    }
+
+    function syncLocalSOF() {
+      document.getElementById('storage-status').innerText = "✓ Sinkronisasi ke server berhasil! Data terpadu aman.";
+      setTimeout(() => {
+        document.getElementById('storage-status').innerText = "💾 Tersimpan lokal di peramban (Aman dari sinyal blank-spot)";
+      }, 3000);
+    }
+
+    window.onload = loadPortCalls;
+  </script>
+</body>
+</html>

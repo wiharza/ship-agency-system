@@ -28,8 +28,8 @@ def test_integration():
         conn.execute("UPDATE port_calls SET ops_closed_by = NULL, ops_closed_at = NULL, finance_closed_by = NULL, finance_closed_at = NULL, status = 'PRE_ARRIVAL' WHERE id = 'PC-2026-JKT-0001'")
     conn.close()
 
+    socketserver.TCPServer.allow_reuse_address = True  # sebelum bind (TIME_WAIT)
     server = socketserver.TCPServer(("", TEST_PORT), AgencyAPIHandler)
-    server.allow_reuse_address = True
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
     time.sleep(0.5)
@@ -208,6 +208,113 @@ def test_integration():
             assert bc12_updated["status"] == "APPROVED"
             assert bc12_updated["approval_time"] is not None
         print("[TEST 12/12] Update Nomor Dokumen & Status Clearance CIGP Berhasil.")
+
+        # 13. Test SPB Gate: port call baru (semua clearance PENDING) -> SPB ditolak 400
+        req_new = urllib.request.Request(
+            f"{base_url}/api/port-calls",
+            data=json.dumps({"vessel_imo": "9876543", "port_code": "IDTPP",
+                             "terminal_name": "JICT (Jakarta Int. Container Terminal)",
+                             "cargo_name": "Batu Bara", "cargo_tonnage": 50000,
+                             "eta": "2026-11-10 08:00", "vessel_category": "FOREIGN"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req_new) as res:
+            assert res.status == 200
+            new_pc = json.loads(res.read().decode("utf-8"))["port_call_id"]
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{new_pc}") as res:
+            det = json.loads(res.read().decode("utf-8"))
+            assert len(det["clearances"]) == 12, f"Template baru harus 12 item, dapat {len(det['clearances'])}"
+            assert any(c["doc_type"].startswith("PKKA") for c in det["clearances"]), "Kapal asing harus pakai PKKA"
+        req_spb_bad = urllib.request.Request(
+            f"{base_url}/api/port-calls/{new_pc}/spb",
+            data=json.dumps({"doc_number": "SPB.TEST.001", "issued_at": "2026-11-10 10:00:00"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        try:
+            urllib.request.urlopen(req_spb_bad)
+            assert False, "SPB harus ditolak bila prasyarat PENDING"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+            err = json.loads(e.read().decode("utf-8"))
+            assert err["blockers"], "Respons 400 SPB harus berisi daftar blocker"
+            assert any("Free Pratique" in b for b in err["blockers"])
+        print("[TEST 13/15] SPB Gate: ditolak 400 saat Free Pratique PENDING.")
+
+        # 13b. Setujui semua clearance template (kecuali SPB) -> SPB lolos
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{new_pc}") as res:
+            det = json.loads(res.read().decode("utf-8"))
+        for cl in det["clearances"]:
+            if "SPB" in cl["doc_type"]:
+                continue
+            req_u = urllib.request.Request(
+                f"{base_url}/api/clearances/{cl['id']}/update",
+                data=json.dumps({"doc_number": f"DOC-{cl['id']}-2026", "status": "APPROVED",
+                                 "remarks": "Disetujui di portal resmi"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(req_u) as res:
+                assert res.status == 200
+        with urllib.request.urlopen(req_spb_bad) as res:
+            assert res.status == 200
+            spb2 = json.loads(res.read().decode("utf-8"))
+            assert spb2["spb_expiry_at"] == "2026-11-11 10:00:00"
+        print("[TEST 13b/15] SPB Gate: lolos setelah semua prasyarat APPROVED.")
+
+        # 14. Test GET clearance-checklist + POST master vessel + POST disbursement
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{new_pc}/clearance-checklist") as res:
+            assert res.status == 200
+            chk = json.loads(res.read().decode("utf-8"))
+            assert chk["can_issue_spb"] is True
+            assert len(chk["clearance_in"]) == 6 and len(chk["clearance_out"]) == 6
+            rksp = next(i for i in chk["items"] if i["category"] == "rksp")
+            assert rksp["deadline"] == "2026-11-09 08:00", f"RKSP deadline harus ETA-24 jam, dapat {rksp['deadline']}"
+        # IMO uji harus unik per run (DB dipakai ulang antar run tes)
+        with urllib.request.urlopen(f"{base_url}/api/master/ports") as res:
+            existing_imos = {v["imo"] for v in json.loads(res.read().decode("utf-8"))["vessels"]}
+        test_imo = next(i for i in ("9999999", "9999998", "9999997", "9999996") if i not in existing_imos)
+        req_vessel = urllib.request.Request(
+            f"{base_url}/api/master/vessels",
+            data=json.dumps({"imo": test_imo, "name": "MV. TEST BARU", "flag": "ID",
+                             "vessel_type": "Bulk Carrier", "grt": 12000, "dwt": 20000,
+                             "loa": 150.0, "max_draft": 9.5}).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req_vessel) as res:
+            assert res.status == 200
+        try:
+            urllib.request.urlopen(req_vessel)
+            assert False, "IMO duplikat harus ditolak"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+        req_dis = urllib.request.Request(
+            f"{base_url}/api/port-calls/{new_pc}/disbursements",
+            data=json.dumps({"category": "HUSBANDRY", "item_name": "Bunkering 100 MT",
+                             "pda_estimate": 50000000, "fda_actual": 0}).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req_dis) as res:
+            assert res.status == 200
+            assert json.loads(res.read().decode("utf-8"))["disbursement_id"]
+        req_dis_bad = urllib.request.Request(
+            f"{base_url}/api/port-calls/{new_pc}/disbursements",
+            data=json.dumps({"category": "TIDAK_ADA", "item_name": "X"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        try:
+            urllib.request.urlopen(req_dis_bad)
+            assert False, "Kategori disbursement tidak valid harus ditolak 400"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+        print("[TEST 14/15] Clearance-checklist, POST master vessel, POST disbursement Berhasil.")
+
+        # 15. Test audit_logs tercatat (SPB + clearance update + close)
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{new_pc}/audit-logs") as res:
+            assert res.status == 200
+            logs = json.loads(res.read().decode("utf-8"))["audit_logs"]
+            actions = [l["action"] for l in logs]
+            assert "SPB_ISSUED" in actions, f"Audit harus berisi SPB_ISSUED, dapat {actions}"
+            assert any(a.startswith("CLEARANCE_UPDATE") for a in actions)
+        print(f"[TEST 15/15] Audit Logs tercatat ({len(logs)} entri untuk {new_pc}).")
 
         print("\nSEMUA INTEGRATION TEST LULUS (100% VERIFIED)!")
 

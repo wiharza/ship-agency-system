@@ -12,10 +12,202 @@ import sys
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from engine.db import get_db, init_db, seed_sample_data, calculate_file_sha256
+from engine.db import get_db, init_db, seed_sample_data, calculate_file_sha256, log_audit
 from engine.laytime import LaytimeCalculator, parse_iso
 
 PORT = 8000
+
+# ---------------------------------------------------------------------------
+# Clearance gate SPB & checklist tenggat (PM 28/2022, PM 8/2022, PMK 158/2017
+# jo PMK 97/2020, UU 6/2011 Ps 18, UU 17/2023 + PP 28/2024).
+# Sistem ini TRACKER INTERNAL: status APPROVED di sini berarti "nomor dokumen
+# resmi sudah dicatat & diverifikasi agen di portal resmi", bukan penerbitan
+# oleh sistem ini. Pengajuan resmi tetap di Inaportnet/INSW/CEISA/Simkapel/
+# SINKARKES. NOR/SOF dan PDA/FDA adalah praktik komersial charter party,
+# bukan regulasi Kemenhub.
+# ---------------------------------------------------------------------------
+
+def _norm_doc(doc_type):
+    return (doc_type or "").upper()
+
+
+def _matches(doc_type, agency, category):
+    t = _norm_doc(doc_type)
+    a = (agency or "").upper()
+    if category == "free_pratique":
+        return "FREE PRATIQUE" in t or "MDH" in t
+    if category == "rksp":
+        return "RKSP" in t or "BC 1.0" in t
+    if category == "inward":
+        return "INWARD" in t or (("BC 1.1" in t or "BC11" in t) and ("MASUK" in t or "BC11-IN" in t))
+    if category == "outward":
+        return "OUTWARD" in t or "BC 1.2" in t or (("BC 1.1" in t) and "KELUAR" in t)
+    if category == "imm_crew":
+        return a == "IMIGRASI" and "CREW LIST" in t
+    if category == "imm_out":
+        return a == "IMIGRASI" and "CLEARANCE OUT" in t
+    if category == "phc_out":
+        return "PORT HEALTH" in t and "OUT" in t
+    if category == "msd":
+        return "MASTER SAILING" in t or "SAILING DECLARATION" in t or t.strip() == "MSD"
+    if category == "pkka":
+        return "PKKA" in t or "PPKKA" in t or "WARTA MASUK" in t
+    if category == "spog_in":
+        return "SPOG" in t and "MASUK" in t
+    if category == "spog_out":
+        return "SPOG" in t and "KELUAR" in t
+    if category == "spb":
+        return "SPB" in t
+    return False
+
+
+def _approved(rows, category):
+    return any(r["status"] == "APPROVED" for r in rows if _matches(r["doc_type"], r["agency"], category))
+
+
+def _exists(rows, category):
+    return any(_matches(r["doc_type"], r["agency"], category) for r in rows)
+
+
+def clearance_spb_gate(clearances):
+    """Kembalikan (blockers, can_issue_spb). Wajib: Free Pratique/MDH,
+    RKSP/BC 1.0, Inward Manifest/BC 1.1. Bersyarat (hanya bila itemnya ada):
+    Immigration Crew List, Outward Manifest, Immigration Clearance Out,
+    Port Health Clearance Out, Master Sailing Declaration."""
+    blockers = []
+    required = [
+        ("free_pratique", "MDH & Free Pratique belum APPROVED (Karantina Kesehatan)"),
+        ("rksp", "RKSP / BC 1.0 belum APPROVED (Bea Cukai)"),
+        ("inward", "Inward Manifest / BC 1.1 belum APPROVED (Bea Cukai)"),
+    ]
+    conditional = [
+        ("imm_crew", "Immigration Crew List belum APPROVED (Imigrasi)"),
+        ("outward", "Outward Manifest / BC 1.1 belum APPROVED (Bea Cukai)"),
+        ("imm_out", "Immigration Clearance Out belum APPROVED (Imigrasi)"),
+        ("phc_out", "Port Health Clearance Out belum APPROVED (Karantina Kesehatan)"),
+        ("msd", "Master Sailing Declaration belum APPROVED"),
+    ]
+    for cat, msg in required:
+        if not _approved(clearances, cat):
+            blockers.append(msg)
+    for cat, msg in conditional:
+        if _exists(clearances, cat) and not _approved(clearances, cat):
+            blockers.append(msg)
+    return blockers, len(blockers) == 0
+
+
+def _fmt(dt):
+    return dt.strftime("%Y-%m-%d %H:%M") if dt else None
+
+
+def build_clearance_checklist(pc, clearances):
+    """Hitung tenggat clearance dari ETA/ETD. RKSP & warta kapal: ETA-24 jam
+    (PM 28/2022 Ps 4; PMK 158/2017 jo PMK 97/2020). Inward Manifest: sebelum
+    bongkar / ETA-24 jam. Outward Manifest: sebelum ETD. Permohonan SPB:
+    ETD-4 jam (PM 8/2022: verifikasi keberangkatan maks 4 jam sebelum ETD
+    kapal barang). SPB berlaku 24 jam sejak diterbitkan (PM 28/2022 Ps 9)."""
+    now = datetime.now()
+    try:
+        eta = parse_iso(pc["eta"]) if pc.get("eta") else None
+    except Exception:
+        eta = None
+    try:
+        etd = parse_iso(pc["etd"]) if pc.get("etd") else None
+    except Exception:
+        etd = None
+    is_foreign = (pc.get("vessel_category") or "FOREIGN") == "FOREIGN"
+    specs = [
+        ("CLEARANCE_IN", "pkka",
+         "PKKA / Pemberitahuan Kedatangan Kapal Asing" if is_foreign else "Warta Masuk / PKK",
+         "INAPORTNET_SIMPADU", eta - timedelta(hours=24) if eta else None,
+         "PM 28/2022 Ps 4: warta + dokumen paling lambat 1x24 jam sebelum tiba"),
+        ("CLEARANCE_IN", "rksp", "RKSP / BC 1.0", "BEA_CUKAI",
+         eta - timedelta(hours=24) if eta else None,
+         "PMK 158/2017 jo PMK 97/2020: paling lambat 24 jam sebelum kedatangan"),
+        ("CLEARANCE_IN", "inward", "Inward Manifest / BC 1.1", "BEA_CUKAI",
+         eta - timedelta(hours=24) if eta else None,
+         "PMK 158/2017 jo PMK 97/2020: sebelum bongkar; manifes nihil bila tanpa muatan"),
+        ("CLEARANCE_IN", "free_pratique", "MDH & Free Pratique", "KARANTINA_KESEHATAN",
+         eta, "UU 17/2023 + PP 28/2024: sebelum kapal berhubungan dengan darat"),
+        ("CLEARANCE_IN", "imm_crew", "Immigration Crew List", "IMIGRASI",
+         eta, "UU 6/2011 Ps 18: pemberitahuan + crew list; shore pass via TPI"),
+        ("CLEARANCE_IN", "spog_in", "SPOG Masuk", "INAPORTNET_SPS",
+         eta, "PM 28/2022: persetujuan olah gerak masuk oleh Syahbandar"),
+        ("CLEARANCE_OUT", "outward", "Outward Manifest / BC 1.1", "BEA_CUKAI",
+         etd, "PMK 158/2017 jo PMK 97/2020: sebelum keberangkatan"),
+        ("CLEARANCE_OUT", "phc_out", "Port Health Clearance Out", "KARANTINA_KESEHATAN",
+         etd, "UU 17/2023 + PP 28/2024: karantina keberangkatan; tanpa persetujuan karantina kesehatan, Syahbandar dilarang terbitkan SPB"),
+        ("CLEARANCE_OUT", "imm_out", "Immigration Clearance Out", "IMIGRASI",
+         etd, "UU 6/2011: outward immigration clearance sebelum SPB"),
+        ("CLEARANCE_OUT", "msd", "Master Sailing Declaration", "INAPORTNET_SPS",
+         etd - timedelta(hours=4) if etd else None,
+         "PM 28/2022 Ps 11: MSD syarat permohonan SPB elektronik"),
+        ("CLEARANCE_OUT", "spog_out", "SPOG Keluar", "INAPORTNET_SPS",
+         etd, "PM 28/2022: persetujuan olah gerak keluar oleh Syahbandar"),
+        ("CLEARANCE_OUT", "spb", "SPB (Surat Persetujuan Berlayar)", "INAPORTNET_SPS",
+         etd - timedelta(hours=4) if etd else None,
+         "PM 28/2022 Ps 9: SPB berlaku 24 jam, 1x pelayaran; verifikasi keberangkatan maks 4 jam sebelum ETD (PM 8/2022)"),
+    ]
+    items = []
+    for phase, cat, label, agency, deadline, basis in specs:
+        matched = [r for r in clearances if _matches(r["doc_type"], r["agency"], cat)]
+        if matched:
+            approved = [r for r in matched if r["status"] == "APPROVED"]
+            chosen = approved[0] if approved else matched[0]
+            status = chosen["status"]
+            doc_number = chosen["doc_number"]
+            clearance_id = chosen["id"]
+        else:
+            status, doc_number, clearance_id = "BELUM ADA", None, None
+        overdue = bool(deadline and now > deadline and status != "APPROVED")
+        due_soon = bool(deadline and status != "APPROVED" and not overdue
+                        and (deadline - now) <= timedelta(hours=4))
+        items.append({
+            "phase": phase, "category": cat, "doc_type": label, "agency": agency,
+            "status": status, "doc_number": doc_number, "clearance_id": clearance_id,
+            "deadline": _fmt(deadline), "basis": basis,
+            "overdue": overdue, "due_soon": due_soon,
+            "warning": ("Tenggat sudah lewat dan dokumen belum APPROVED" if overdue
+                        else ("Tenggat < 4 jam lagi" if due_soon
+                              else ("ETD belum diisi — tenggat clearance-out belum dapat dihitung" if deadline is None and phase == "CLEARANCE_OUT" else None))),
+        })
+    blockers, can_issue = clearance_spb_gate(clearances)
+    return {
+        "port_call_id": pc["id"], "vessel_category": pc.get("vessel_category"),
+        "eta": pc.get("eta"), "etd": pc.get("etd"),
+        "spb_issued_at": pc.get("spb_issued_at"), "spb_expiry_at": pc.get("spb_expiry_at"),
+        "can_issue_spb": can_issue, "blockers": blockers,
+        "clearance_in": [i for i in items if i["phase"] == "CLEARANCE_IN"],
+        "clearance_out": [i for i in items if i["phase"] == "CLEARANCE_OUT"],
+        "items": items,
+        "note": "Tracker internal — bukan portal resmi. Pengajuan resmi tetap di Inaportnet/INSW/CEISA/Simkapel/SINKARKES.",
+    }
+
+
+def _insert_disbursement(conn, pc_id, payload):
+    category = payload.get("category")
+    item_name = (payload.get("item_name") or "").strip()
+    allowed = ("PNBP_KEMENHUB", "BUP_PELINDO", "CIGP_INSTANSI", "HUSBANDRY", "AGENCY_FEE")
+    if category not in allowed:
+        return None, f"category wajib salah satu dari: {', '.join(allowed)}"
+    if not item_name:
+        return None, "item_name wajib diisi"
+    try:
+        pda = float(payload.get("pda_estimate", 0) or 0)
+        fda = float(payload.get("fda_actual", 0) or 0)
+    except (TypeError, ValueError):
+        return None, "pda_estimate / fda_actual harus angka"
+    if pda < 0 or fda < 0:
+        return None, "pda_estimate / fda_actual tidak boleh negatif"
+    cur = conn.execute(
+        "INSERT INTO disbursements (port_call_id, category, item_name, pda_estimate, fda_actual, simponi_billing, ntpn, invoice_number, voucher_sha256) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (pc_id, category, item_name, pda, fda,
+         payload.get("simponi_billing"), payload.get("ntpn"),
+         payload.get("invoice_number"), payload.get("voucher_sha256")),
+    )
+    return cur.lastrowid, None
+
 
 
 class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
@@ -145,6 +337,32 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json(res)
                 return
 
+            elif len(parts) == 4 and parts[3] == "clearance-checklist":
+                pc_id = parts[2]
+                conn = get_db()
+                c = conn.cursor()
+                c.execute("SELECT * FROM port_calls WHERE id = ?", (pc_id,))
+                pc = c.fetchone()
+                if not pc:
+                    conn.close()
+                    self.send_json({"error": "Port Call tidak ditemukan"}, status=404)
+                    return
+                c.execute("SELECT * FROM clearances WHERE port_call_id = ? ORDER BY id ASC", (pc_id,))
+                clearances = [dict(r) for r in c.fetchall()]
+                conn.close()
+                self.send_json(build_clearance_checklist(dict(pc), clearances))
+                return
+
+            elif len(parts) == 4 and parts[3] == "audit-logs":
+                pc_id = parts[2]
+                conn = get_db()
+                c = conn.cursor()
+                c.execute("SELECT * FROM audit_logs WHERE port_call_id = ? ORDER BY id ASC", (pc_id,))
+                rows = [dict(r) for r in c.fetchall()]
+                conn.close()
+                self.send_json({"port_call_id": pc_id, "audit_logs": rows})
+                return
+
             elif len(parts) == 4 and parts[3] == "handover":
                 # Dynamic Handover Shift Summary (Putusan Q28)
                 pc_id = parts[2]
@@ -193,6 +411,65 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
         except Exception:
             payload = {}
 
+        if path == "/api/master/vessels":
+            imo = (payload.get("imo") or "").strip()
+            name = (payload.get("name") or "").strip()
+            flag = (payload.get("flag") or "").strip()
+            vessel_type = (payload.get("vessel_type") or "").strip() or "General Cargo"
+            if not imo or not name or not flag:
+                self.send_json({"error": "imo, name, dan flag wajib diisi"}, status=400)
+                return
+            try:
+                grt = float(payload.get("grt", 0) or 0)
+                dwt = float(payload.get("dwt", 0) or 0)
+                loa = float(payload.get("loa", 0) or 0)
+                max_draft = float(payload.get("max_draft", 0) or 0)
+            except (TypeError, ValueError):
+                self.send_json({"error": "grt/dwt/loa/max_draft harus angka"}, status=400)
+                return
+            if min(grt, dwt, loa, max_draft) < 0:
+                self.send_json({"error": "grt/dwt/loa/max_draft tidak boleh negatif"}, status=400)
+                return
+            conn = get_db()
+            try:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO master_vessels (imo, name, flag, vessel_type, call_sign, grt, dwt, loa, max_draft) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (imo, name, flag, vessel_type, payload.get("call_sign"), grt, dwt, loa, max_draft),
+                    )
+            except Exception:
+                conn.close()
+                self.send_json({"error": f"Kapal IMO {imo} sudah terdaftar"}, status=400)
+                return
+            conn.close()
+            self.send_json({"status": "success", "imo": imo, "message": f"Kapal {name} (IMO {imo}) berhasil ditambahkan"})
+            return
+
+        if path == "/api/disbursements":
+            pc_id = payload.get("port_call_id")
+            if not pc_id:
+                self.send_json({"error": "port_call_id wajib diisi"}, status=400)
+                return
+            conn = get_db()
+            c = conn.cursor()
+            c.execute("SELECT id FROM port_calls WHERE id = ?", (pc_id,))
+            if not c.fetchone():
+                conn.close()
+                self.send_json({"error": "Port Call tidak ditemukan"}, status=404)
+                return
+            with conn:
+                dis_id, err = _insert_disbursement(conn, pc_id, payload)
+                if not err:
+                    log_audit(conn, pc_id, payload.get("user", "ops_agent"), "DISBURSEMENT_ADD",
+                              None, f"{payload.get('category')} — {payload.get('item_name')}")
+            conn.close()
+            if err:
+                self.send_json({"error": err}, status=400)
+                return
+            self.send_json({"status": "success", "disbursement_id": dis_id, "message": "Item PDA/FDA berhasil ditambahkan"})
+            return
+
         if path == "/api/master/terminals":
             port_code = payload.get("port_code")
             terminal_name = payload.get("terminal_name")
@@ -219,6 +496,7 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             port_code = payload.get("port_code", "IDTPP")
             terminal_name = payload.get("terminal_name", "Terminal Umum")
             eta = payload.get("eta", datetime.now().strftime("%Y-%m-%d %H:%M"))
+            etd = payload.get("etd")  # opsional; bila diisi, tenggat clearance-out dapat dihitung
             cargo_name = payload.get("cargo_name", "General Cargo")
             cargo_tonnage = float(payload.get("cargo_tonnage", 10000))
 
@@ -235,6 +513,16 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 conn.close()
                 self.send_json({"error": f"Kode pelabuhan '{port_code}' tidak terdaftar di sistem master! Pilih dari daftar baku."}, status=400)
                 return
+            for _table, _col, _val, _label in (
+                ("master_branches", "id", branch_id, "Cabang"),
+                ("master_principals", "id", principal_id, "Principal"),
+                ("master_vessels", "imo", vessel_imo, "Kapal (IMO)"),
+            ):
+                c.execute(f"SELECT 1 FROM {_table} WHERE {_col} = ?", (_val,))
+                if not c.fetchone():
+                    conn.close()
+                    self.send_json({"error": f"{_label} '{_val}' tidak terdaftar di master! Daftarkan dulu via master data."}, status=400)
+                    return
 
             # Pastikan terminal tersimpan di master_terminals
             c.execute("SELECT id FROM master_terminals WHERE port_code = ? AND name = ?", (port_code, terminal_name))
@@ -250,23 +538,51 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             with conn:
                 conn.execute("""
-                INSERT INTO port_calls (id, branch_id, vessel_imo, principal_id, vessel_category, port_code, terminal_name, status, eta, cargo_name, cargo_tonnage, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'PRE_ARRIVAL', ?, ?, ?, ?, ?)
-                """, (pc_id, branch_id, vessel_imo, principal_id, vessel_category, port_code, terminal_name, eta, cargo_name, cargo_tonnage, now_str, now_str))
+                INSERT INTO port_calls (id, branch_id, vessel_imo, principal_id, vessel_category, port_code, terminal_name, status, eta, etd, cargo_name, cargo_tonnage, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'PRE_ARRIVAL', ?, ?, ?, ?, ?, ?)
+                """, (pc_id, branch_id, vessel_imo, principal_id, vessel_category, port_code, terminal_name, eta, etd, cargo_name, cargo_tonnage, now_str, now_str))
 
                 # Default CP params
                 conn.execute("""
                 INSERT INTO port_call_charter_parties VALUES (?, 'Charterer Standard', 10000, 'SHINC', 20000, 10000, 6)
                 """, (pc_id,))
 
-                # Clearances default template
-                conn.execute("""
-                INSERT INTO clearances (port_call_id, agency, doc_type, status, remarks) VALUES
-                (?, 'INAPORTNET_SIMPADU', 'Warta Masuk / PKK', 'PENDING', 'Menunggu input PPK'),
-                (?, 'BEA_CUKAI', 'RKSP / BC 1.0', 'PENDING', 'Wajib 24 jam pra-tiba'),
-                (?, 'KARANTINA_KESEHATAN', 'MDH & Free Pratique', 'PENDING', 'Pemeriksaan karantina'),
-                (?, 'INAPORTNET_SPS', 'SPB (Surat Persetujuan Berlayar)', 'PENDING', 'Diterbitkan saat clearance out')
-                """, (pc_id, pc_id, pc_id, pc_id))
+                # Clearances default template — checklist clearance-in & clearance-out
+                # lengkap, dibedakan ASING (PKKA) vs DOMESTIK (PKK). Lihat
+                # docs/playbook/lampiran/checklist-clearance-in-out.md.
+                first_doc = ("PKKA / Pemberitahuan Kedatangan Kapal Asing"
+                             if vessel_category == "FOREIGN" else "Warta Masuk / PKK")
+                template = [
+                    ("INAPORTNET_SIMPADU", first_doc,
+                     "Warta kedatangan — PM 28/2022 Ps 4: paling lambat 1x24 jam sebelum tiba"),
+                    ("BEA_CUKAI", "RKSP / BC 1.0",
+                     "PMK 158/2017 jo PMK 97/2020: paling lambat 24 jam sebelum kedatangan"),
+                    ("BEA_CUKAI", "Inward Manifest / BC 1.1",
+                     "PMK 158/2017 jo PMK 97/2020: sebelum bongkar; manifes nihil bila tanpa muatan"),
+                    ("KARANTINA_KESEHATAN", "MDH & Free Pratique",
+                     "UU 17/2023 + PP 28/2024: sebelum kapal berhubungan dengan darat"),
+                    ("IMIGRASI", "Immigration Crew List",
+                     "UU 6/2011 Ps 18: pemberitahuan + crew list; shore pass via TPI"),
+                    ("INAPORTNET_SPS", "SPOG Masuk",
+                     "PM 28/2022: persetujuan olah gerak masuk oleh Syahbandar"),
+                    ("BEA_CUKAI", "Outward Manifest / BC 1.1",
+                     "PMK 158/2017 jo PMK 97/2020: sebelum keberangkatan"),
+                    ("KARANTINA_KESEHATAN", "Port Health Clearance Out",
+                     "UU 17/2023 + PP 28/2024: karantina keberangkatan"),
+                    ("IMIGRASI", "Immigration Clearance Out",
+                     "UU 6/2011: outward immigration clearance sebelum SPB"),
+                    ("INAPORTNET_SPS", "Master Sailing Declaration",
+                     "PM 28/2022 Ps 11: MSD syarat permohonan SPB elektronik"),
+                    ("INAPORTNET_SPS", "SPOG Keluar",
+                     "PM 28/2022: persetujuan olah gerak keluar oleh Syahbandar"),
+                    ("INAPORTNET_SPS", "SPB (Surat Persetujuan Berlayar)",
+                     "PM 28/2022 Ps 9: berlaku 24 jam, 1x pelayaran; diterbitkan saat clearance out"),
+                ]
+                conn.executemany(
+                    "INSERT INTO clearances (port_call_id, agency, doc_type, status, remarks) "
+                    "VALUES (?, ?, ?, 'PENDING', ?)",
+                    [(pc_id, agency, doc_type, remarks) for agency, doc_type, remarks in template],
+                )
 
             conn.close()
             self.send_json({"status": "success", "port_call_id": pc_id, "message": f"Port Call {pc_id} berhasil dibuat"})
@@ -307,10 +623,13 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
 
                 with conn:
                     conn.execute("""
-                    UPDATE clearances 
+                    UPDATE clearances
                     SET doc_number = ?, status = ?, remarks = ?, approval_time = ?, file_sha256 = ?
                     WHERE id = ?
                     """, (new_doc_number, new_status, new_remarks, approval_time, file_sha256, clearance_id))
+                    log_audit(conn, cl["port_call_id"], payload.get("user", "ops_agent"), "CLEARANCE_UPDATE",
+                              f"{cl['doc_type']} [{cl['status']}] {cl['doc_number'] or ''}",
+                              f"{cl['doc_type']} [{new_status}] {new_doc_number or ''}")
                 conn.close()
                 self.send_json({"status": "success", "message": "Dokumen clearance berhasil diperbarui", "file_sha256": file_sha256})
                 return
@@ -332,6 +651,8 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     INSERT INTO milestones (port_call_id, milestone_code, event_time, recorded_by, remarks)
                     VALUES (?, ?, ?, ?, ?)
                     """, (pc_id, code, event_time, recorded_by, remarks))
+                    log_audit(conn, pc_id, recorded_by, f"MILESTONE_{code}",
+                              None, f"{code} @ {event_time} — {remarks}")
 
                     # Update status port call jika milestone kunci
                     new_status = None
@@ -369,20 +690,41 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({"status": "success", "message": "Jeda SOF berhasil ditambahkan"})
                 return
 
-            # POST /api/port-calls/<id>/spb
+            # POST /api/port-calls/<id>/spb — GATE: SPB hanya diterbitkan bila
+            # prasyarat clearance sudah APPROVED (PM 28/2022 Ps 11; tanpa
+            # persetujuan karantina kesehatan Syahbandar dilarang terbitkan SPB).
             if len(parts) == 4 and parts[3] == "spb":
                 pc_id = parts[2]
                 issue_time_str = payload.get("issued_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
                 doc_number = payload.get("doc_number", "SPB-ONLINE-001")
-                issue_dt = parse_iso(issue_time_str)
+                try:
+                    issue_dt = parse_iso(issue_time_str)
+                except Exception:
+                    self.send_json({"error": "Format issued_at tidak valid (YYYY-MM-DD HH:MM[:SS])"}, status=400)
+                    return
                 # PM 28/2022 Ps 9 ayat (1): Kedaluwarsa tepat 24 jam sejak diterbitkan
                 expiry_dt = issue_dt + timedelta(hours=24)
                 expiry_time_str = expiry_dt.strftime("%Y-%m-%d %H:%M:%S")
 
                 conn = get_db()
+                c = conn.cursor()
+                c.execute("SELECT id FROM port_calls WHERE id = ?", (pc_id,))
+                if not c.fetchone():
+                    conn.close()
+                    self.send_json({"error": "Port Call tidak ditemukan"}, status=404)
+                    return
+                c.execute("SELECT * FROM clearances WHERE port_call_id = ?", (pc_id,))
+                blockers, can_issue = clearance_spb_gate([dict(r) for r in c.fetchall()])
+                if not can_issue:
+                    conn.close()
+                    self.send_json({
+                        "error": "SPB ditolak: prasyarat clearance belum terpenuhi",
+                        "blockers": blockers, "can_issue_spb": False,
+                    }, status=400)
+                    return
                 with conn:
                     conn.execute("""
-                    UPDATE port_calls 
+                    UPDATE port_calls
                     SET spb_issued_at = ?, spb_expiry_at = ?, updated_at = ?
                     WHERE id = ?
                     """, (issue_time_str, expiry_time_str, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), pc_id))
@@ -392,6 +734,8 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     SET doc_number = ?, approval_time = ?, expiry_time = ?, status = 'APPROVED', remarks = 'Berlaku 24 jam'
                     WHERE port_call_id = ? AND doc_type LIKE '%SPB%'
                     """, (doc_number, issue_time_str, expiry_time_str, pc_id))
+                    log_audit(conn, pc_id, payload.get("user", "ops_agent"), "SPB_ISSUED",
+                              None, f"SPB {doc_number} terbit {issue_time_str}, kedaluwarsa {expiry_time_str}")
                 conn.close()
                 self.send_json({
                     "status": "success",
@@ -424,8 +768,32 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     INSERT INTO clearances (port_call_id, agency, doc_type, doc_number, submission_time, approval_time, status, file_name, file_sha256, remarks, submitted_by)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (pc_id, agency, doc_type, doc_number, now_str, approval_time, status, f"{doc_slug}.pdf", file_sha256, remarks, "ops_agent"))
+                    log_audit(conn, pc_id, payload.get("user", "ops_agent"), "CLEARANCE_ADD",
+                              None, f"{agency} — {doc_type} [{status}] {doc_number}")
                 conn.close()
                 self.send_json({"status": "success", "file_sha256": file_sha256, "message": f"Dokumen {doc_type} berhasil dicatat"})
+                return
+
+            # POST /api/port-calls/<id>/disbursements
+            if len(parts) == 4 and parts[3] == "disbursements":
+                pc_id = parts[2]
+                conn = get_db()
+                c = conn.cursor()
+                c.execute("SELECT id FROM port_calls WHERE id = ?", (pc_id,))
+                if not c.fetchone():
+                    conn.close()
+                    self.send_json({"error": "Port Call tidak ditemukan"}, status=404)
+                    return
+                with conn:
+                    dis_id, err = _insert_disbursement(conn, pc_id, payload)
+                    if not err:
+                        log_audit(conn, pc_id, payload.get("user", "ops_agent"), "DISBURSEMENT_ADD",
+                                  None, f"{payload.get('category')} — {payload.get('item_name')}")
+                conn.close()
+                if err:
+                    self.send_json({"error": err}, status=400)
+                    return
+                self.send_json({"status": "success", "disbursement_id": dis_id, "message": "Item PDA/FDA berhasil ditambahkan"})
                 return
 
             # POST /api/port-calls/<id>/laytime/calculate
@@ -480,10 +848,11 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 conn = get_db()
                 with conn:
                     conn.execute("""
-                    UPDATE port_calls 
+                    UPDATE port_calls
                     SET ops_closed_by = ?, ops_closed_at = ?, status = 'CLEARANCE_CLOSED', updated_at = ?
                     WHERE id = ?
                     """, (user_name, now_str, now_str, pc_id))
+                    log_audit(conn, pc_id, user_name, "CLOSE_OPS", None, f"Otorisasi 1 oleh {user_name}")
                 conn.close()
                 self.send_json({"status": "success", "message": f"Otorisasi 1 (Clearance Operasional) disahkan oleh {user_name}"})
                 return
@@ -504,10 +873,11 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
 
                 with conn:
                     conn.execute("""
-                    UPDATE port_calls 
+                    UPDATE port_calls
                     SET finance_closed_by = ?, finance_closed_at = ?, status = 'CLOSED', updated_at = ?
                     WHERE id = ?
                     """, (user_name, now_str, now_str, pc_id))
+                    log_audit(conn, pc_id, user_name, "CLOSE_FINANCE", None, f"Otorisasi 2 oleh {user_name}")
                 conn.close()
                 self.send_json({"status": "success", "message": f"Otorisasi 2 (Finance) disahkan. Port Call resmi CLOSED (Arsip 10 Tahun Terkunci)."})
                 return
@@ -551,8 +921,8 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
 def run_server(port=PORT):
     init_db()
     seed_sample_data()
+    socketserver.TCPServer.allow_reuse_address = True  # harus sebelum bind, agar restart cepat tidak kena TIME_WAIT
     server = socketserver.TCPServer(("", port), AgencyAPIHandler)
-    server.allow_reuse_address = True
     print(f"Server Keagenan Kapal berjalan di http://localhost:{port}")
     try:
         server.serve_forever()

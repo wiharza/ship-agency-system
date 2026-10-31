@@ -36,3 +36,8 @@ Catatan putusan pemilik sistem selama grilling. Setiap butir dipakai sebagai bat
 | Q30 | Pencatatan PNBP: catat nomor aju, kode billing SIMPONI, NTPN, dan bukti bayar; tidak menghitung tarif sendiri. |
 | Q31 | Batas waktu penyusunan FDA: maksimal 30 hari kalender setelah keberangkatan kapal (ATD). |
 | Q32 | Penanganan sengketa FDA: modul dispute tracking khusus (status klaim, deadline respon, riwayat negosiasi). |
+| Q33 | Gate SPB ditegakkan di server (31 Okt 2026, ADR-0006): SPB ditolak 400 + daftar blocker bila prasyarat clearance belum APPROVED. UI tidak boleh menjadi satu-satunya penjaga kepatuhan. |
+| Q34 | Template clearance port call baru: 12 item, dibedakan kapal ASING (PKKA) vs DOMESTIK (Warta Masuk / PKK); tenggat dihitung server dari ETA/ETD (RKSP & warta ETA−24 jam, Inward sebelum bongkar/ETA−24 jam, Outward sebelum ETD, permohonan SPB ETD−4 jam). |
+| Q35 | Audit trail ditulis lewat `log_audit()` dalam transaksi yang sama dengan perubahan yang diaudit; cakupan saat ini: update/tambah clearance, terbit SPB, milestone, close-ops, close-finance, tambah disbursement (ADR-0006). |
+| Q36 | Kejujuran spesifikasi (31 Okt 2026, ADR-0007): PRD menandai fitur yang belum diimplementasi sebagai [TARGET] dan merinci statusnya di PRD §9; dokumen tidak boleh mengklaim fitur yang tidak ada di kode (RBAC, notifikasi, dashboard, auto-save offline). |
+| Q37 | ETD opsional saat pembuatan port call; bila ETD kosong, tenggat clearance-out tidak dapat dihitung sistem dan checklist menampilkan peringatan tersebut. |

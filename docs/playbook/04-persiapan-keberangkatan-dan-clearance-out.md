@@ -67,7 +67,7 @@ Setiap langkah ditulis: pelaksana → sistem → keluaran dokumen → tenggat �
 
 | Langkah | Aktor | Sistem | Keluaran | Tenggat | Bukti | Jebakan |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| Upload berkas permohonan SPB | Staf Dokumen | Inaportnet (modul SPS Kesyahbandaran) | Permohonan SPB Elektronik | Minimal 4–6 jam sebelum rencana lepas tali | Tanda terima permohonan SPS Online | Berkas clearance Bea Cukai atau Imigrasi belum ter-upload di INSW/SPS |
+| Upload berkas permohonan SPB | Staf Dokumen | Inaportnet (modul SPS Kesyahbandaran) | Permohonan SPB Elektronik | **Paling lambat 4 jam sebelum ETD** (PM 8/2022: verifikasi keberangkatan maks 4 jam sebelum ETD kapal barang); praktik lapangan: ajukan 4–6 jam sebelumnya sebagai buffer | Tanda terima permohonan SPS Online | Berkas clearance Bea Cukai atau Imigrasi belum ter-upload di INSW/SPS |
 | Pemeriksaan Administratif & Kelaiklautan | Petugas Syahbandar (Marine Inspector) | SPS Kesyahbandaran | Lembar Verifikasi & Validitas (PM 28/2022 Contoh 5) | Sebelum jadwal pasang/lepas tali | Status *Approved* pada portal Inaportnet | Masa berlaku salah satu sertifikat statutori kapal (radio/safety equipment) telah habis |
 
 ---
@@ -80,6 +80,15 @@ Setiap langkah ditulis: pelaksana → sistem → keluaran dokumen → tenggat �
 > *"Surat Persetujuan Berlayar tidak berlaku apabila Kapal dalam jangka waktu 24 (dua puluh empat) jam setelah Surat Persetujuan Berlayar diberikan Kapal tidak bertolak dari Pelabuhan."*
 
 ### Ketentuan Mutlak Sistem:
+0. **Gate SPB di tracker (31 Okt 2026, ADR-0006):** sebelum SPB diterbitkan,
+   sistem menolak (`POST /api/port-calls/<id>/spb` → 400 + daftar blocker)
+   bila MDH & Free Pratique, RKSP / BC 1.0, atau Inward Manifest / BC 1.1
+   belum APPROVED, atau bila item bersyarat yang ada (Immigration Crew List,
+   Outward Manifest, Immigration Clearance Out, Port Health Clearance Out,
+   Master Sailing Declaration) belum APPROVED. Gate ini adalah cerminan
+   prasyarat PM 28/2022 Ps 11 di dalam tracker — penerbitan resminya tetap
+   oleh Syahbandar di Inaportnet. Periksa panel checklist di tab Dokumen &
+   CIGP (`GET /api/port-calls/<id>/clearance-checklist`).
 1. **Masa Berlaku 1x24 Jam**: SPB hanya sah digunakan untuk **1 (satu) kali pelayaran** dan wajib bertolak sebelum hitung mundur 24 jam berakhir.
 2. **Konsekuensi Kedaluwarsa**: Bila kapal tertahan (kerusakan mesin, cuaca buruk, kendala pandu) melebihi 24 jam, SPB **gugur demi hukum**. Agen wajib mengembalikan SPB fisik/elektronik ke Syahbandar dan mengajukan permohonan baru dari awal.
 3. **Timer Merah di Sistem**: Sistem keagenan wajib menyalakan penghitung mundur (*countdown timer*) warna **MERAH** sejak detik SPB diterbitkan oleh Syahbandar.

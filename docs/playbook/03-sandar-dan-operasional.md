@@ -67,6 +67,10 @@ Apabila Nakhoda atau Perwakilan Charterer/PBM menolak menandatangani SOF akibat 
 
 ### Proteksi Blank Spot Dermaga (Putusan Q24):
 - Sistem formulir pencatatan SOF web app wajib memiliki mekanisme **auto-save lokal di browser** (IndexedDB / LocalStorage) agar data ketikan per jam di dermaga tanpa sinyal tidak hilang saat halaman di-refresh.
+- **Status 31 Okt 2026: belum diimplementasi di kode** — tombol *Sinkronkan
+  ke Server* di UI hanya mengubah label status; pencatatan SOF dikirim
+  langsung ke server dan tidak tersimpan lokal. Jangan andalkan proteksi
+  blank spot sampai fitur ini dibangun (lihat PRD §9).
 
 ---
 

@@ -231,22 +231,29 @@ def init_db():
 
 
 def seed_sample_data():
-    """Mengisi data awal master dan port call pengujian jika kosong."""
+    """Mengisi data awal master dan port call pengujian jika kosong.
+
+    Seeding BERTAHAP per tabel: tiap tabel di-seed bila kosong, independen
+    dari tabel lain. Bug lama: blok kedua hanya jalan bila master_ports kosong,
+    padahal blok pertama sudah mengisi master_ports — sehingga di DB baru
+    branches/principals/vessels/sample port call tidak pernah ter-seed dan
+    POST /api/port-calls gagal foreign key.
+    """
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM master_terminals")
-    if cursor.fetchone()[0] == 0:
-        with conn:
-            conn.execute("""
-            INSERT OR IGNORE INTO master_ports VALUES 
+
+    def _count(table):
+        return cursor.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+
+    ports_sql = """
+            INSERT OR IGNORE INTO master_ports VALUES
             ('IDTPP', 'Tanjung Priok', 'DKI Jakarta', 'IDTPP', 'Kelas Utama', 'VHF Ch 12/16', 14.0, 'Pelabuhan Utama Nasional'),
             ('IDTPS', 'Tanjung Perak', 'Jawa Timur', 'IDTPS', 'Kelas Utama', 'VHF Ch 14/16', 12.5, 'Gerbang Logistik Timur'),
             ('IDKOL', 'Kolonodale', 'Sulawesi Tengah', 'IDKOL', 'Kelas III (KUPP)', 'VHF Ch 16', 11.0, 'Pelabuhan Tambang Nikel & Curah'),
             ('IDBTM', 'Batu Ampar', 'Kepulauan Riau', 'IDBTM', 'Kelas I', 'VHF Ch 16/71', 13.0, 'Kawasan Perbatasan & FTZ')
-            """)
-
-            conn.execute("""
-            INSERT INTO master_terminals (port_code, name, terminal_type, max_draft) VALUES
+            """
+    terminals_sql = """
+            INSERT OR IGNORE INTO master_terminals (port_code, name, terminal_type, max_draft) VALUES
             ('IDTPP', 'JICT (Jakarta Int. Container Terminal)', 'PETIKEMAS', 14.0),
             ('IDTPP', 'TPK Koja', 'PETIKEMAS', 13.5),
             ('IDTPP', 'NPCT1 (New Priok Container Terminal 1)', 'PETIKEMAS', 16.0),
@@ -262,90 +269,69 @@ def seed_sample_data():
             ('IDBTM', 'Dermaga Utara Batu Ampar', 'UMUM', 12.0),
             ('IDBTM', 'Terminal Petikemas Batu Ampar', 'PETIKEMAS', 13.0),
             ('IDBTM', 'Tersus Kabil Integrated Port', 'TERSUS', 12.5)
-            """)
+            """
 
-    cursor.execute("SELECT COUNT(*) FROM master_ports")
-    if cursor.fetchone()[0] == 0:
+    if _count("master_ports") == 0:
         with conn:
-            # Ports
+            conn.execute(ports_sql)
+    if _count("master_terminals") == 0:
+        with conn:
+            conn.execute(terminals_sql)
+    if _count("master_branches") == 0:
+        with conn:
             conn.execute("""
-            INSERT INTO master_ports VALUES 
-            ('IDTPP', 'Tanjung Priok', 'DKI Jakarta', 'IDTPP', 'Kelas Utama', 'VHF Ch 12/16', 14.0, 'Pelabuhan Utama Nasional'),
-            ('IDTPS', 'Tanjung Perak', 'Jawa Timur', 'IDTPS', 'Kelas Utama', 'VHF Ch 14/16', 12.5, 'Gerbang Logistik Timur'),
-            ('IDKOL', 'Kolonodale', 'Sulawesi Tengah', 'IDKOL', 'Kelas III (KUPP)', 'VHF Ch 16', 11.0, 'Pelabuhan Tambang Nikel & Curah'),
-            ('IDBTM', 'Batu Ampar', 'Kepulauan Riau', 'IDBTM', 'Kelas I', 'VHF Ch 16/71', 13.0, 'Kawasan Perbatasan & FTZ')
-            """)
-
-            # Pre-determined Terminals / Jetties
-            conn.execute("""
-            INSERT INTO master_terminals (port_code, name, terminal_type, max_draft) VALUES
-            ('IDTPP', 'JICT (Jakarta Int. Container Terminal)', 'PETIKEMAS', 14.0),
-            ('IDTPP', 'TPK Koja', 'PETIKEMAS', 13.5),
-            ('IDTPP', 'NPCT1 (New Priok Container Terminal 1)', 'PETIKEMAS', 16.0),
-            ('IDTPP', 'Dermaga 101-106 (Terminal Jamrud/Umum)', 'UMUM', 10.5),
-            ('IDTPP', 'Terminal Curah Kering Bogasari', 'CURAH', 12.0),
-            ('IDTPS', 'Terminal Petikemas Surabaya (TPS)', 'PETIKEMAS', 12.5),
-            ('IDTPS', 'Terminal Teluk Lamong (TTL)', 'PETIKEMAS', 14.0),
-            ('IDTPS', 'Terminal Nilam & Mirah', 'UMUM', 9.5),
-            ('IDTPS', 'Terminal Jamrud Barat/Utara', 'CURAH', 10.5),
-            ('IDKOL', 'Pelabuhan Umum KUPP Kolonodale', 'UMUM', 9.0),
-            ('IDKOL', 'Tersus PT COR Industri Indonesia', 'TERSUS', 11.5),
-            ('IDKOL', 'TUKS PT Bumanik', 'TUKS', 10.0),
-            ('IDBTM', 'Dermaga Utara Batu Ampar', 'UMUM', 12.0),
-            ('IDBTM', 'Terminal Petikemas Batu Ampar', 'PETIKEMAS', 13.0),
-            ('IDBTM', 'Tersus Kabil Integrated Port', 'TERSUS', 12.5)
-            """)
-
-            # Branches
-            conn.execute("""
-            INSERT INTO master_branches VALUES 
+            INSERT OR IGNORE INTO master_branches VALUES
             ('BR-JKT', 'Cabang Jakarta Raya', 'IDTPP', 'Jl. Pelabuhan Raya No. 10, Tj. Priok', '+62-21-439001'),
             ('BR-SUB', 'Cabang Surabaya', 'IDTPS', 'Jl. Perak Timur No. 44, Surabaya', '+62-31-329112')
             """)
-
-            # Principals
+    if _count("master_principals") == 0:
+        with conn:
             conn.execute("""
-            INSERT INTO master_principals VALUES 
+            INSERT OR IGNORE INTO master_principals VALUES
             ('PR-OCN', 'Ocean Shipping Line Ltd.', 'Singapura', 'operations@oceanshipping.sg', 'Capt. Wong'),
             ('PR-PAC', 'Pacific Maritime Corp', 'Panama', 'agency@pacificmaritime.pa', 'Mr. David Miller')
             """)
-
-            # Vessels
+    if _count("master_vessels") == 0:
+        with conn:
             conn.execute("""
-            INSERT INTO master_vessels VALUES 
+            INSERT OR IGNORE INTO master_vessels VALUES
             ('9876543', 'MV. SAMUDRA JAYA', 'Indonesia', 'Bulk Carrier', 'YBXX', 32500, 55000, 189.9, 12.8),
             ('9431289', 'MV. PACIFIC GLORY', 'Panama', 'Container Ship', '3EMA9', 41000, 52000, 222.0, 13.2)
             """)
 
-            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            eta_sample = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
-
-            # Sample Active Port Call 1 (Asing di Tj Priok)
+    # Sample port call — di-seed bila ID contoh belum ada (bukan bila tabel kosong).
+    sample_id = "PC-2026-JKT-0001"
+    exists = cursor.execute(
+        "SELECT 1 FROM port_calls WHERE id = ?", (sample_id,)
+    ).fetchone()
+    if not exists:
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        eta_sample = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        with conn:
             conn.execute("""
             INSERT INTO port_calls VALUES (
                 'PC-2026-JKT-0001', 'BR-JKT', '9431289', 'PR-PAC', 'FOREIGN', 'IDTPP', 'Terminal Nusantara 2',
                 'PRE_ARRIVAL', ?, NULL, NULL, NULL, 'Peti Kemas Campuran', 25000, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?
             )
             """, (eta_sample, now_str, now_str))
-
-            # Charter Party Params
             conn.execute("""
             INSERT INTO port_call_charter_parties VALUES (
                 'PC-2026-JKT-0001', 'Global Chartering Ltd.', 8000, 'SHINC', 18000, 9000, 6
             )
             """)
-
-            # Clearances awal
             conn.execute("""
             INSERT INTO clearances (port_call_id, agency, doc_type, doc_number, submission_time, status, file_name, file_sha256, remarks, submitted_by) VALUES
-            ('PC-2026-JKT-0001', 'INAPORTNET_SIMPADU', 'PPKKA', 'PPKKA-2026-10-881', ?, 'APPROVED', 'ppkka_mv_pacific.pdf', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', 'Izin trayek luar negeri disetujui', 'ops_agent_1'),
-            ('PC-2026-JKT-0001', 'BEA_CUKAI', 'BC 1.0 (RKSP)', 'RKSP-002198', ?, 'APPROVED', 'rksp_002198.pdf', '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08', 'Disetujui sistem CEISA', 'ops_agent_1'),
-            ('PC-2026-JKT-0001', 'BEA_CUKAI', 'BC 1.1 Masuk', 'BC11-IN-7712', ?, 'APPROVED', 'bc11_in.pdf', '4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a', 'Pos pendaftaran terbit', 'ops_agent_1'),
+            ('PC-2026-JKT-0001', 'INAPORTNET_SIMPADU', 'PKKA / Pemberitahuan Kedatangan Kapal Asing', 'PPKKA-2026-10-881', ?, 'APPROVED', 'ppkka_mv_pacific.pdf', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', 'Izin trayek luar negeri disetujui', 'ops_agent_1'),
+            ('PC-2026-JKT-0001', 'BEA_CUKAI', 'RKSP / BC 1.0', 'RKSP-002198', ?, 'APPROVED', 'rksp_002198.pdf', '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08', 'Disetujui sistem CEISA', 'ops_agent_1'),
+            ('PC-2026-JKT-0001', 'BEA_CUKAI', 'Inward Manifest / BC 1.1', 'BC11-IN-7712', ?, 'APPROVED', 'bc11_in.pdf', '4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a', 'Pos pendaftaran terbit', 'ops_agent_1'),
             ('PC-2026-JKT-0001', 'KARANTINA_KESEHATAN', 'MDH & Free Pratique', 'MDH-JKT-992', ?, 'APPROVED', 'free_pratique.pdf', 'ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d', 'SSCEC valid hingga 2027', 'ops_agent_1'),
+            ('PC-2026-JKT-0001', 'IMIGRASI', 'Immigration Crew List', 'IMM-CL-2026-441', ?, 'APPROVED', 'crew_list.pdf', 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90', 'Crew list + paspor diperiksa TPI', 'ops_agent_1'),
+            ('PC-2026-JKT-0001', 'BEA_CUKAI', 'Outward Manifest / BC 1.1', 'BC11-OUT-7713', ?, 'APPROVED', 'bc11_out.pdf', 'b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1', 'Manifes keluar diserahkan sebelum berlayar', 'ops_agent_1'),
+            ('PC-2026-JKT-0001', 'KARANTINA_KESEHATAN', 'Port Health Clearance Out', 'PHC-OUT-2026-118', ?, 'APPROVED', 'phc_out.pdf', 'c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2', 'Pemeriksaan karantina keberangkatan selesai', 'ops_agent_1'),
+            ('PC-2026-JKT-0001', 'INAPORTNET_SPS', 'Master Sailing Declaration', 'MSD-2026-552', ?, 'APPROVED', 'msd.pdf', 'd4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3', 'Ditandatangani nakhoda', 'ops_agent_1'),
+            ('PC-2026-JKT-0001', 'INAPORTNET_SPS', 'SPOG Keluar', 'SPOG-OUT-2026-337', ?, 'APPROVED', 'spog_out.pdf', 'e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4', 'Olah gerak keluar disetujui Syahbandar', 'ops_agent_1'),
             ('PC-2026-JKT-0001', 'INAPORTNET_SPS', 'SPB (Surat Persetujuan Berlayar)', NULL, NULL, 'PENDING', NULL, NULL, 'Belum diterbitkan (kapal belum sandar)', NULL)
-            """, (now_str, now_str, now_str, now_str))
-
-            # Disbursements awal
+            """, (now_str, now_str, now_str, now_str, now_str, now_str, now_str, now_str, now_str))
             conn.execute("""
             INSERT INTO disbursements (port_call_id, category, item_name, pda_estimate, fda_actual, simponi_billing, ntpn) VALUES
             ('PC-2026-JKT-0001', 'PNBP_KEMENHUB', 'Uang Rambu & Labuh', 15000000, 15000000, 'BILL-99120', '9812A9B12874'),
@@ -355,7 +341,58 @@ def seed_sample_data():
             ('PC-2026-JKT-0001', 'AGENCY_FEE', 'Official Agency Fee', 25000000, 25000000, NULL, NULL)
             """)
 
+    # Migrasi data lama: bila sample PC sudah ada (DB dari versi lama, hanya
+    # 5 item clearance), tambahkan item gate SPB yang belum ada sebagai
+    # APPROVED dengan nomor contoh, agar sample tetap lolos gate SPB.
+    gate_items = [
+        ("IMIGRASI", "Immigration Crew List", "IMM-CL-2026-441", "Crew list + paspor diperiksa TPI"),
+        ("BEA_CUKAI", "Outward Manifest / BC 1.1", "BC11-OUT-7713", "Manifes keluar diserahkan sebelum berlayar"),
+        ("KARANTINA_KESEHATAN", "Port Health Clearance Out", "PHC-OUT-2026-118", "Pemeriksaan karantina keberangkatan selesai"),
+        ("INAPORTNET_SPS", "Master Sailing Declaration", "MSD-2026-552", "Ditandatangani nakhoda"),
+        ("INAPORTNET_SPS", "SPOG Keluar", "SPOG-OUT-2026-337", "Olah gerak keluar disetujui Syahbandar"),
+    ]
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with conn:
+        for agency, doc_type, doc_number, remarks in gate_items:
+            row = cursor.execute(
+                "SELECT 1 FROM clearances WHERE port_call_id = ? AND doc_type = ?",
+                (sample_id, doc_type),
+            ).fetchone()
+            if not row:
+                conn.execute(
+                    "INSERT INTO clearances (port_call_id, agency, doc_type, doc_number, submission_time, approval_time, status, remarks, submitted_by) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 'APPROVED', ?, 'ops_agent_1')",
+                    (sample_id, agency, doc_type, doc_number, now_str, now_str, remarks),
+                )
+        # Normalisasi nama lama agar cocok dengan matcher gate SPB.
+        conn.execute(
+            "UPDATE clearances SET doc_type = 'PKKA / Pemberitahuan Kedatangan Kapal Asing' "
+            "WHERE port_call_id = ? AND doc_type = 'PPKKA'",
+            (sample_id,),
+        )
+        conn.execute(
+            "UPDATE clearances SET doc_type = 'RKSP / BC 1.0' "
+            "WHERE port_call_id = ? AND doc_type = 'BC 1.0 (RKSP)'",
+            (sample_id,),
+        )
+        conn.execute(
+            "UPDATE clearances SET doc_type = 'Inward Manifest / BC 1.1' "
+            "WHERE port_call_id = ? AND doc_type = 'BC 1.1 Masuk'",
+            (sample_id,),
+        )
+
     conn.close()
+
+
+def log_audit(conn, port_call_id, user_id, action, old_value=None, new_value=None):
+    """Tulis satu baris ke audit_logs. Dipanggil di dalam transaksi yang sama
+    dengan perubahan yang diaudit, agar audit tidak pernah tertinggal."""
+    conn.execute(
+        "INSERT INTO audit_logs (port_call_id, user_id, action, old_value, new_value, timestamp) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (port_call_id, user_id or "system", action, old_value, new_value,
+         datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+    )
 
 
 def calculate_file_sha256(content_bytes: bytes) -> str:

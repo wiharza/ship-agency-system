@@ -66,7 +66,7 @@ Klausul protektif wajib bila ada keraguan inspeksi:
 
 ## 2.6 Pelaporan LK3 Masuk (Laporan Kedatangan Kapal)
 
-**Dasar Hukum**: PM No. 65 Tahun 2019 Pasal 22 huruf a; PM No. 8 Tahun 2022.
+**Dasar Hukum**: PM No. 59 Tahun 2021 (menggantikan PM 65/2019 — rujukan Pasal 22 huruf a PM 65/2019 di versi lama dokumen ini sudah tidak berlaku); PM No. 8 Tahun 2022.
 
 | Langkah | Aktor | Sistem | Keluaran | Tenggat | Bukti | Jebakan |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |

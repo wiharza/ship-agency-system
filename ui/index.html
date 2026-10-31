@@ -52,6 +52,8 @@
     .btn-yellow:hover { background: #b45309; }
     .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
     .btn-outline:hover { background: rgba(255,255,255,0.05); }
+    .btn-cyan { background: var(--cyan); }
+    .btn-cyan:hover { background: #0891b2; }
 
     .timer-box { background: rgba(239, 68, 68, 0.15); border: 1px solid var(--red); border-radius: 6px; padding: 14px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; }
     .timer-text { font-size: 20px; font-weight: 800; color: #f87171; font-variant-numeric: tabular-nums; }
@@ -153,6 +155,13 @@
 
         <!-- Tab 2: Dokumen CIGP & Inaportnet -->
         <div id="tab-clearances" class="tab-pane" style="display: none;">
+          <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 12px; font-size: 12px; color: var(--text-muted);">
+            <strong style="color: var(--cyan);">⚠️ Tracker internal — bukan portal resmi.</strong>
+            Pengajuan resmi tetap dilakukan di Inaportnet / INSW / CEISA / Simkapel / SINKARKES.
+            Sistem ini hanya mencatat nomor dokumen, status, tenggat, dan bukti (hash SHA-256).
+            INSW (single window lintas instansi, Warta I–V) berbeda dengan Inaportnet (layanan kapal Ditjen Hubla, PM 8/2022).
+          </div>
+          <div id="clearance-checklist">Memuat checklist tenggat clearance…</div>
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
             <p style="font-size: 12px; color: var(--text-muted);">Pencatatan nomor surat resmi dan hash berkas SHA-256 (Putusan Q18).</p>
             <div style="display: flex; gap: 8px;">
@@ -287,7 +296,10 @@
         <div id="tab-finance" class="tab-pane" style="display: none;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
             <h3 style="margin: 0;">Rekonsiliasi PDA vs FDA</h3>
-            <span class="badge badge-yellow">Batas FDA: 30 Hari Pasca ATD (Q31)</span>
+            <span style="display: flex; gap: 8px; align-items: center;">
+              <button class="btn btn-cyan" style="padding: 4px 10px; font-size: 12px;" onclick="submitDisbursement()">+ Tambah Item PDA/FDA</button>
+              <span class="badge badge-yellow">Batas FDA: 30 Hari Pasca ATD (Q31)</span>
+            </span>
           </div>
           <table>
             <thead>
@@ -418,6 +430,8 @@
         document.getElementById('spb-alert-banner').style.display = 'none';
         if (timerInterval) clearInterval(timerInterval);
       }
+
+      renderChecklist();
 
       // Render Clearances Table
       const clTable = document.getElementById('clearances-table-body');
@@ -580,12 +594,81 @@
       if (!docNum) return;
       const nowStr = new Date().toISOString().replace("T", " ").substring(0, 19);
 
-      await fetch(`/api/port-calls/${activePortCallId}/spb`, {
+      const res = await fetch(`/api/port-calls/${activePortCallId}/spb`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ doc_number: docNum, issued_at: nowStr })
       });
+      const data = await res.json();
+      if (!res.ok) {
+        alert("SPB DITOLAK:\n" + (data.blockers || [data.error || "Prasyarat belum terpenuhi"]).join("\n- "));
+        return;
+      }
       selectPortCall(activePortCallId);
+    }
+
+    function renderChecklist() {
+      const el = document.getElementById('clearance-checklist');
+      if (!el || !currentData) return;
+      fetch(`/api/port-calls/${currentData.id}/clearance-checklist`)
+        .then(r => r.json())
+        .then(d => {
+          const badge = (st) => st === 'APPROVED' ? 'badge-green' : (st === 'BELUM ADA' ? 'badge-red' : 'badge-yellow');
+          const row = (it) => `<tr>
+            <td>${it.phase === 'CLEARANCE_IN' ? 'Clearance In' : 'Clearance Out'}</td>
+            <td>${it.doc_type}</td>
+            <td>${it.agency}</td>
+            <td>${it.deadline || '—'}</td>
+            <td><span class="badge ${badge(it.status)}">${it.status}</span></td>
+            <td style="font-size:11px;color:${it.overdue ? '#f87171' : (it.due_soon ? '#fbbf24' : 'var(--text-muted)')};">${it.warning || it.basis}</td>
+          </tr>`;
+          el.innerHTML = `
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
+              <strong style="font-size:13px;">Checklist Clearance — Tenggat dari ETA/ETD</strong>
+              <span class="badge ${d.can_issue_spb ? 'badge-green' : 'badge-red'}">${d.can_issue_spb ? '✓ SPB BISA DITERBITKAN' : '✕ SPB BELUM BISA DITERBITKAN'}</span>
+            </div>
+            ${d.blockers && d.blockers.length ? `<div style="color:#f87171;font-size:12px;margin-bottom:8px;">Penghalang SPB:<br>• ${d.blockers.join('<br>• ')}</div>` : ''}
+            <table><thead><tr><th>Fase</th><th>Dokumen</th><th>Instansi</th><th>Tenggat</th><th>Status</th><th>Dasar / Peringatan</th></tr></thead>
+            <tbody>${d.items.map(row).join('')}</tbody></table>
+            <p style="font-size:11px;color:var(--text-muted);margin-top:6px;">${d.note}</p>`;
+        })
+        .catch(() => { el.innerHTML = 'Checklist tidak dapat dimuat.'; });
+    }
+
+    async function submitDisbursement() {
+      if (!activePortCallId) return;
+      const category = prompt("Kategori (PNBP_KEMENHUB / BUP_PELINDO / CIGP_INSTANSI / HUSBANDRY / AGENCY_FEE):", "HUSBANDRY");
+      if (!category) return;
+      const item_name = prompt("Nama item biaya:", "Pasokan Air Tawar");
+      if (!item_name) return;
+      const pda = parseFloat(prompt("Estimasi PDA (IDR):", "10000000")) || 0;
+      const fda = parseFloat(prompt("Realisasi FDA (IDR, 0 bila belum ada):", "0")) || 0;
+      const res = await fetch(`/api/port-calls/${activePortCallId}/disbursements`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category: category.trim().toUpperCase(), item_name, pda_estimate: pda, fda_actual: fda })
+      });
+      const data = await res.json();
+      if (!res.ok) { alert("Gagal: " + (data.error || "Terjadi kesalahan")); return; }
+      selectPortCall(activePortCallId);
+    }
+
+    async function submitNewVessel() {
+      const imo = prompt("IMO kapal (wajib):", "");
+      if (!imo) return;
+      const name = prompt("Nama kapal:", "MV. CONTOH");
+      if (!name) return;
+      const flag = prompt("Bendera (kode negara, mis. ID / PA / SG):", "ID");
+      const vessel_type = prompt("Jenis kapal:", "Bulk Carrier") || "General Cargo";
+      const grt = parseFloat(prompt("GRT:", "10000")) || 0;
+      const res = await fetch('/api/master/vessels', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imo: imo.trim(), name, flag: flag.trim().toUpperCase(), vessel_type, grt, dwt: 0, loa: 0, max_draft: 0 })
+      });
+      const data = await res.json();
+      if (!res.ok) { alert("Gagal: " + (data.error || "Terjadi kesalahan")); return; }
+      await loadMasterData();
+      openNewPortCallModal();
+      document.getElementById('modal-vessel-select').value = data.imo;
     }
 
     async function signOpsClosure() {
@@ -723,6 +806,8 @@
       const cargoName = document.getElementById('modal-cargo-name').value.trim() || 'General Cargo';
       const cargoTonnage = parseFloat(document.getElementById('modal-cargo-tonnage').value) || 10000;
       const eta = document.getElementById('modal-eta').value || new Date().toISOString().slice(0, 16);
+      const etdRaw = document.getElementById('modal-etd').value;
+      const etd = etdRaw ? etdRaw.replace('T', ' ') : null;
 
       const res = await fetch('/api/port-calls', {
         method: 'POST',
@@ -734,6 +819,7 @@
           cargo_name: cargoName,
           cargo_tonnage: cargoTonnage,
           eta: eta.replace('T', ' '),
+          etd: etd,
           vessel_category: isDomestic ? 'DOMESTIC' : 'FOREIGN'
         })
       });
@@ -782,14 +868,14 @@
       const data = await res.json();
       if (data.status === 'success') {
         closeEditClearanceModal();
-        if (currentPortCallId) await selectPortCall(currentPortCallId);
+        if (activePortCallId) await selectPortCall(activePortCallId);
       } else {
         alert("Gagal: " + (data.error || "Terjadi kesalahan"));
       }
     }
 
     function openNewClearanceModal() {
-      if (!currentPortCallId) {
+      if (!activePortCallId) {
         alert("Pilih Port Call terlebih dahulu!");
         return;
       }
@@ -806,7 +892,7 @@
     }
 
     async function submitNewClearance() {
-      if (!currentPortCallId) return;
+      if (!activePortCallId) return;
       const agency = document.getElementById('new-cl-agency').value;
       const doc_type = document.getElementById('new-cl-type').value.trim();
       const doc_number = document.getElementById('new-cl-number').value.trim();
@@ -818,7 +904,7 @@
         return;
       }
 
-      const res = await fetch(`/api/port-calls/${currentPortCallId}/clearance`, {
+      const res = await fetch(`/api/port-calls/${activePortCallId}/clearance`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agency, doc_type, doc_number, status, remarks })
@@ -826,7 +912,7 @@
       const data = await res.json();
       if (data.status === 'success') {
         closeNewClearanceModal();
-        await selectPortCall(currentPortCallId);
+        await selectPortCall(activePortCallId);
       } else {
         alert("Gagal: " + (data.error || "Terjadi kesalahan"));
       }
@@ -866,6 +952,7 @@
       <div class="form-group">
         <label>Pilih Kapal (Master Vessels):</label>
         <select id="modal-vessel-select"></select>
+        <button class="btn btn-outline" style="padding: 4px 10px; font-size: 11px; margin-top: 6px;" onclick="submitNewVessel()">+ Tambah Kapal Master</button>
       </div>
 
       <div style="display: grid; grid-template-columns: 1.5fr 1fr; gap: 12px;">
@@ -882,6 +969,11 @@
       <div class="form-group">
         <label>Estimasi Kedatangan (ETA):</label>
         <input type="datetime-local" id="modal-eta">
+      </div>
+
+      <div class="form-group">
+        <label>Estimasi Keberangkatan (ETD — opsional, untuk tenggat clearance-out):</label>
+        <input type="datetime-local" id="modal-etd">
       </div>
 
       <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;">
@@ -967,7 +1059,7 @@
           <option value="PPK (Pemberitahuan Pelayaran Kapal)"></option>
           <option value="RKSP (Rencana Kedatangan Sarana Pengangkut)"></option>
           <option value="Inward Manifest BC 1.1"></option>
-          <option value="Outward Manifest BC 1.2"></option>
+          <option value="Outward Manifest / BC 1.1"></option>
           <option value="Immigration Crew List Clearance"></option>
           <option value="Port Health Clearance (COP / Free Pratique)"></option>
           <option value="Maritime Declaration of Health (MDH)"></option>

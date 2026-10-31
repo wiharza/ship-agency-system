@@ -23,7 +23,7 @@ Setiap langkah ditulis: pelaksana → sistem → keluaran dokumen → tenggat �
 | Langkah | Aktor | Sistem | Keluaran | Tenggat | Bukti | Jebakan |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | Ekstraksi parameter kontrak charter | Staf Ops / Finance | Form Kontrak | Parameter laytime: jenis hari (WWD/SHINC/SHEX), rate bongkar/muat, rate demurrage/despatch | Sebelum perhitungan SOF | Salinan recap charter party fixture | Salah menerapkan klausul hari libur lokal pelabuhan pada kontrak jenis SHEX (*Sundays and Holidays Excluded*) |
-| Eksekusi script kalkulasi laytime stdlib | Staf Ops / Finance | Engine Python stdlib (`laytime_calc.py`) | *Laytime Statement* & Lembar Perhitungan Demurrage/Despatch | Maksimal 3 hari pasca ATD | Lembar kalkulasi otomatis + rekaman log durasi SOF | Menghitung manual di spreadsheet dengan formula terpotong atau pembulatan menit yang keliru |
+| Eksekusi kalkulasi laytime stdlib | Staf Ops / Finance | Engine Python stdlib (`engine/laytime.py`, endpoint `POST /api/port-calls/<id>/laytime/calculate`) | *Laytime Statement* & Lembar Perhitungan Demurrage/Despatch | Maksimal 3 hari pasca ATD | Lembar kalkulasi otomatis + rekaman log durasi SOF | Menghitung manual di spreadsheet dengan formula terpotong atau pembulatan menit yang keliru |
 
 ---
 

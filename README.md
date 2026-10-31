@@ -174,6 +174,3 @@ dengan menghapus `agency.db` lalu menjalankan `python3 server.py` sekali
   seed **harus diganti** dengan data asli perusahaan sebelum dipakai produksi.
 - Akun portal resmi (Inaportnet, INSW, CEISA, Simkapel, SINKARKES) tetap
   dipegang user; sistem ini tidak menyimpan kredensial portal apa pun.
-- Catatan: deskripsi repo GitHub masih menyebut "player for Global IPTV-org
-  playlist" — itu **salah/stale, bukan dari repo ini**; ubah di Settings
-  GitHub (tidak bisa diperbaiki lewat git).

@@ -25,6 +25,7 @@ TABLES = [
     "master_ports", "master_terminals", "master_vessels", "master_branches",
     "master_principals", "port_calls", "port_call_charter_parties", "clearances",
     "milestones", "sof_stoppages", "disbursements", "fda_disputes", "audit_logs",
+    "users",
 ]
 
 
@@ -498,6 +499,21 @@ def init_db():
         )
         """)
 
+        # Pengguna aplikasi (ADR-0011): identitas + role untuk autentikasi.
+        # Password TIDAK pernah plaintext — hanya hash PBKDF2 (lihat
+        # engine/auth.py). Tidak ada user bawaan di-seed: user pertama
+        # dibuat lewat scripts/create_user.py (tidak ada pendaftaran publik).
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            full_name TEXT NOT NULL,
+            role TEXT NOT NULL CHECK(role IN ('OPS', 'FINANCE', 'ADMIN')),
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL
+        )
+        """)
+
     conn.close()
 
 
@@ -653,6 +669,31 @@ def seed_sample_data():
         )
 
     conn.close()
+
+
+def create_user(conn, username, password, full_name, role):
+    """Buat user baru (atau timpa bila sudah ada dan update=True di pemanggil).
+
+    Dipakai scripts/create_user.py dan tes. Password di-hash di sini, tidak
+    pernah disimpan plaintext. Kembalikan True bila user baru dibuat,
+    False bila username sudah ada."""
+    from engine.auth import hash_password, ROLES
+    if role not in ROLES:
+        raise ValueError(f"Role harus salah satu dari {ROLES}")
+    username = (username or "").strip()
+    if not username:
+        raise ValueError("Username wajib diisi")
+    exists = conn.execute(
+        "SELECT 1 FROM users WHERE username = ?", (username,)).fetchone()
+    if exists:
+        return False
+    conn.execute(
+        "INSERT INTO users (username, password_hash, full_name, role, active, created_at) "
+        "VALUES (?, ?, ?, ?, 1, ?)",
+        (username, hash_password(password), (full_name or "").strip() or username,
+         role, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
+    return True
 
 
 def log_audit(conn, port_call_id, user_id, action, old_value=None, new_value=None):

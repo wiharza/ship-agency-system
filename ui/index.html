@@ -77,6 +77,8 @@
     <div>
       <span class="badge badge-green">INAPORTNET COMPLIANT</span>
       <span class="badge badge-cyan">PYTHON STDLIB ENGINE</span>
+      <span class="badge badge-cyan" id="session-user" title="Pengguna yang sedang login"></span>
+      <button class="btn btn-outline" style="padding: 4px 10px; font-size: 11px;" onclick="logout()">Keluar</button>
     </div>
   </header>
 
@@ -350,6 +352,7 @@
 
     async function loadPortCalls() {
       const res = await fetch('/api/port-calls');
+      if (res.status === 401) { location.reload(); return; }  // session habis -> halaman login
       const data = await res.json();
       const listEl = document.getElementById('pc-list');
       listEl.innerHTML = '';
@@ -918,7 +921,22 @@
       }
     }
 
+    // -- Sesi login (ADR-0011): tampilkan siapa yang login; bila session
+    // habis, muat ulang supaya server menampilkan halaman login.
+    async function loadSessionUser() {
+      const res = await fetch('/api/me');
+      if (!res.ok) { location.reload(); return; }
+      const me = await res.json();
+      document.getElementById('session-user').textContent = `${me.username} (${me.role})`;
+    }
+
+    async function logout() {
+      await fetch('/api/logout', { method: 'POST' });
+      location.reload();
+    }
+
     window.onload = () => {
+      loadSessionUser();
       loadPortCalls();
       loadMasterData();
     };

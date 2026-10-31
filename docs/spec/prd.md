@@ -23,13 +23,18 @@ Operasional keagenan kapal di Indonesia diatur secara ketat oleh hukum maritim (
 
 ---
 
-## 2. Aktor & Matriks Hak Akses (RBAC) — [TARGET, belum diimplementasi]
+## 2. Aktor & Matriks Hak Akses (RBAC) — sebagian terimplementasi (1 Nov 2026, ADR-0011)
 
 Merujuk pada Putusan **Q11, Q25, dan Q26**, sistem **dirancang** menerapkan
-*Role-Based Access Control* berbasis cabang (*branch-scoped*). **Status 31 Okt
-2026: belum ada autentikasi/RBAC di kode** (`server.py` tidak memeriksa
-identitas; kolom `user` di audit diambil dari payload apa adanya). Tabel di
-bawah ini adalah spesifikasi target, bukan perilaku aplikasi saat ini:
+*Role-Based Access Control* berbasis cabang (*branch-scoped*). **Status 1 Nov
+2026: autentikasi dasar terimplementasi** — tabel `users` dengan role
+`OPS`/`FINANCE`/`ADMIN`, session cookie ter-sign HMAC, gate role di
+close-ops (OPS/ADMIN) dan close-finance (FINANCE/ADMIN), dan `user_id` audit
+diambil dari session (bukan payload). Yang **masih [TARGET]**: peran
+Doc Agent / Boarding Agent / Principal read-only di tabel bawah, manajemen
+pengguna lewat UI, unlock override, dan isolasi per cabang (branch-scoped)
+— role saat ini berlaku global, bukan per cabang. Tabel di bawah ini
+adalah spesifikasi target; baris yang sudah berlaku ditandai:
 
 | Peran (*Role*) | Tanggung Jawab Utama | Izin Akses Kunci |
 | :--- | :--- | :--- |
@@ -235,7 +240,7 @@ dan kode bertentangan, tabel ini yang berlaku sampai salah satunya diperbaiki.
 | Dual sign-off close-ops → close-finance | ✅ Terimplementasi | `server.py`; TEST 7 |
 | Handover shift | ✅ Terimplementasi | `GET /api/port-calls/<id>/handover`; TEST 8 |
 | Timer SPB 24 jam (banner merah) | ✅ Terimplementasi | `ui/index.html` + `spb_expiry_at` |
-| RBAC / autentikasi (§2) | ❌ Belum | Tidak ada pemeriksaan identitas di `server.py` |
+| RBAC / autentikasi (§2) | ✅ Sebagian terimplementasi | `engine/auth.py` (PBKDF2 + session cookie HMAC + rate limit login) + `engine/db.py` tabel `users` + `scripts/create_user.py` + `server.py` enforcement di `do_GET`/`do_POST` (401 tanpa session) + gate role close-ops (OPS/ADMIN) & close-finance (FINANCE/ADMIN, 403) + actor audit dari session. TEST 1/17/18/19/20/21. Masih [TARGET]: role Doc Agent/Boarding Agent/Principal read-only, manajemen user lewat UI, isolasi per cabang. ADR-0011 |
 | Dashboard utama (§5.1) | ❌ Belum | UI hanya daftar + detail port call |
 | Tab Timeline Terpadu (§5.2) | ❌ Belum | UI punya 6 tab, tanpa timeline |
 | Auto-save SOF offline / cetak BIMCO-FONASBA PDF (§5.2) | ❌ Belum | Tombol sinkron hanya mengubah label |
@@ -267,5 +272,5 @@ Merujuk pada Putusan **Q8, Q14, dan ADR-0003**:
 | **Integritas & Retensi Data (Q27)** | Seluruh data Port Call berstatus *Closed* disimpan minimal **10 tahun**. Tidak ada mekanisme hapus otomatis (*hard delete*) pada data arsip. |
 | **Integritas Bukti Berkas (Q18)** | Setiap berkas lampiran yang diunggah wajib dihitung hash SHA-256-nya pada saat diterima server dan disimpan di kolom `file_sha256`. |
 | **Keandalan Koneksi (Q24)** | Modul form SOF dan checklist wajib berfungsi dalam mode semi-offline (menyimpan perubahan di browser) saat staf operasional di dermaga mengalami gangguan sinyal. |
-| **Keamanan Data & Otorisasi** | **[TARGET, belum diimplementasi]** Enkripsi data transit (HTTPS/TLS) dan isolasi multi-kantor cabang (staf cabang A tidak dapat memodifikasi port call cabang B kecuali Super Admin). Server saat ini berjalan HTTP polos tanpa autentikasi — jangan expose ke internet (lihat README). |
+| **Keamanan Data & Otorisasi** | **[TARGET, belum diimplementasi]** Enkripsi data transit (HTTPS/TLS) dan isolasi multi-kantor cabang (staf cabang A tidak dapat memodifikasi port call cabang B kecuali Super Admin). Autentikasi dasar sudah ada sejak 1 Nov 2026 (ADR-0011: users + roles + session cookie), tapi server tetap berjalan HTTP polos — jangan expose ke internet tanpa TLS di depannya (lihat README). |
 | **Audit Trail Penuh** | Dicatat lewat helper `log_audit()` di `engine/db.py` (31 Okt 2026, ADR-0006), dalam transaksi yang sama dengan perubahan yang diaudit. **Cakupan saat ini:** `CLEARANCE_UPDATE`, `CLEARANCE_ADD`, `SPB_ISSUED`, `MILESTONE_*`, `CLOSE_OPS`, `CLOSE_FINANCE`, `DISBURSEMENT_ADD` — masing-masing menyimpan User ID, nilai lama, nilai baru, stempel waktu. **Belum diaudit:** stoppage SOF, dispute FDA, penambahan master data (kapal/terminal), dan pembuatan port call. **Tidak disimpan:** alamat IP (kolom tidak ada di tabel `audit_logs`). |

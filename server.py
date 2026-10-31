@@ -7,10 +7,13 @@ import http.server
 import socketserver
 import json
 import urllib.parse
+import io
 import os
 import sys
+import threading
 from datetime import datetime, timedelta
 from decimal import Decimal
+from email.message import Message as WSGIHeaders
 
 from engine.db import get_db, init_db, seed_sample_data, calculate_file_sha256, log_audit
 from engine.laytime import LaytimeCalculator, parse_iso
@@ -985,6 +988,107 @@ def run_server(port=PORT):
     except KeyboardInterrupt:
         print("\nServer dihentikan.")
         server.server_close()
+
+
+# ---------------------------------------------------------------------------
+# WSGI entrypoint untuk Vercel (atau server WSGI lain).
+#
+# Vercel mendeteksi server.py sebagai Python entrypoint dan mewajibkan
+# variabel top-level "app" (ASGI) atau "application" (WSGI); tanpa itu build
+# gagal dengan PYTHON_ENTRYPOINT_NOT_FOUND. Kode API ditulis dengan gaya
+# http.server (self.rfile/self.wfile), maka adapter ini menerjemahkan SATU
+# request WSGI menjadi SATU pemanggilan handler di memori — tanpa dependensi
+# tambahan (ADR-0003). Mode lokal `python server.py 8000` tidak berubah.
+# ---------------------------------------------------------------------------
+
+class _WSGIRequest(AgencyAPIHandler):
+    """Kerangka handler tanpa socket: isi langsung atribut yang dipakai
+    do_GET/do_POST/send_json, tangkap respons ke buffer memori."""
+
+    def __init__(self, environ, body):
+        # Sengaja TIDAK memanggil BaseRequestHandler.__init__ (yang menyentuh
+        # socket); cukup atribut yang benar-benar dipakai logika API.
+        self.command = environ.get("REQUEST_METHOD", "GET")
+        query = environ.get("QUERY_STRING", "")
+        self.path = environ.get("PATH_INFO", "/") + (f"?{query}" if query else "")
+        self.request_version = environ.get("SERVER_PROTOCOL", "HTTP/1.1")
+        self.requestline = f"{self.command} {self.path} {self.request_version}"
+        self.headers = WSGIHeaders()
+        for key, value in environ.items():
+            if key.startswith("HTTP_"):
+                self.headers[key[len("HTTP_"):].replace("_", "-")] = value
+        if environ.get("CONTENT_TYPE"):
+            self.headers["Content-Type"] = environ["CONTENT_TYPE"]
+        if environ.get("CONTENT_LENGTH"):
+            self.headers["Content-Length"] = environ["CONTENT_LENGTH"]
+        self.rfile = io.BytesIO(body)
+        self.wfile = io.BytesIO()
+
+    def log_request(self, code="-", size="-"):  # request log dikelola platform WSGI
+        pass
+
+    def log_message(self, fmt, *args):
+        pass
+
+
+_application_ready = False
+_application_lock = threading.Lock()
+
+
+def _ensure_database_ready():
+    """Cold start: siapkan skema + data contoh sekali per instance."""
+    global _application_ready
+    if _application_ready:
+        return
+    with _application_lock:
+        if not _application_ready:
+            init_db()
+            seed_sample_data()
+            _application_ready = True
+
+
+def application(environ, start_response):
+    """Callable WSGI: menjembatani request platform <-> AgencyAPIHandler."""
+    _ensure_database_ready()
+
+    content_length = int(environ.get("CONTENT_LENGTH") or 0)
+    body = environ["wsgi.input"].read(content_length) if content_length > 0 else b""
+    handler = _WSGIRequest(environ, body)
+    method = handler.command
+
+    try:
+        if method == "GET":
+            handler.do_GET()
+        elif method == "POST":
+            handler.do_POST()
+        elif method == "OPTIONS":
+            handler.do_OPTIONS()
+        else:
+            handler.send_json({"error": f"Metode {method} tidak didukung"}, status=405)
+    except Exception:
+        if handler.wfile.tell() == 0:  # respons belum terkirim sama sekali
+            handler.send_json({"error": "Kesalahan internal server"}, status=500)
+        else:
+            raise
+
+    raw = handler.wfile.getvalue()
+    head, _, payload = raw.partition(b"\r\n\r\n")
+    lines = head.split(b"\r\n")
+    pieces = lines[0].decode("latin-1").split(" ", 2)  # contoh: "HTTP/1.0 200 OK"
+    try:
+        code = int(pieces[1])
+    except (IndexError, ValueError):
+        code = 500
+    reason = pieces[2] if len(pieces) > 2 else ""
+    response_headers = []
+    for line in lines[1:]:
+        name, _, value = line.decode("latin-1").partition(":")
+        name = name.strip()
+        if name.lower() in ("server", "date"):  # milik platform WSGI
+            continue
+        response_headers.append((name, value.strip()))
+    start_response(f"{code} {reason}".strip(), response_headers)
+    return [payload]
 
 
 if __name__ == "__main__":

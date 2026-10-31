@@ -7,10 +7,44 @@ import sqlite3
 import hashlib
 import json
 import os
+import shutil
+import tempfile
+import threading
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 
-DB_FILE = os.path.join(os.path.dirname(__file__), "..", "agency.db")
+
+def _resolve_db_file():
+    """Pilih lokasi file SQLite yang selalu writable.
+
+    Di Vercel/Lambda, isi proyek bersifat read-only sehingga SQLite tidak bisa
+    membuka journal/WAL di lokasi aslinya. Bila agency.db bawaan tidak dapat
+    dibuka untuk menulis, salin sekali ke /tmp per cold start dan gunakan
+    salinan itu. (Konsekuensi: data yang ditulis bersifat per-instance dan
+    hilang saat instance baru dibuat — wajar untuk demo/preview.)
+    """
+    bundled = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "agency.db"))
+    try:
+        # Probe tulis: bila agency.db belum ada, "ab" membuatnya (lokal:
+        # init_db() akan mengisinya — sama seperti sebelumnya). Bila direktori
+        # proyek read-only (Vercel/Lambda), probe ini gagal dengan OSError
+        # dan kita jatuh ke /tmp — termasuk bila agency.db tidak ikut
+        # ter-bundle (sejak PR #3, agency.db tidak lagi ter-commit di Git).
+        with open(bundled, "ab"):
+            return bundled
+    except OSError:  # filesystem read-only (Vercel/Lambda)
+        target = os.path.join(tempfile.gettempdir(), "agency.db")
+        if not os.path.exists(target):
+            if os.path.exists(bundled):
+                staging = f"{target}.{os.getpid()}.{threading.get_ident()}.tmp"
+                shutil.copyfile(bundled, staging)
+                os.replace(staging, target)  # atomik: aman dari race antar-request
+            # Bila tidak ada bundled DB: /tmp/agency.db dibiarkan belum ada;
+            # init_db() akan membuatnya di sana saat cold start.
+        return target
+
+
+DB_FILE = _resolve_db_file()
 
 
 def get_db():

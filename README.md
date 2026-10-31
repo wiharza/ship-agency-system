@@ -54,7 +54,11 @@ curl -s -X POST localhost:8000/api/port-calls/PC-2026-TPP-0002/milestone -H 'Con
   -d '{"milestone_code":"EOSP","event_time":"2026-11-10 07:30","remarks":"Tiba di ambang luar"}'
 curl -s -X POST localhost:8000/api/port-calls/PC-2026-TPP-0002/laytime/calculate -H 'Content-Type: application/json' \
   -d '{"nor_tendered_time":"2026-11-10 08:00","commenced_time":"2026-11-10 14:00","completed_time":"2026-11-12 14:00"}'
-# 8. Tambah item PDA/FDA, lalu tutup ops + finance (finance menolak bila ops belum tutup)
+# 8. Tambah item PDA/FDA, catat keberangkatan, lalu tutup ops + finance
+#    (close-ops DIGATE: ditolak bila SPB belum terbit/kedaluwarsa atau kapal
+#    belum DEPARTED — catat SAILED dulu, dalam masa berlaku SPB 24 jam)
+curl -s -X POST localhost:8000/api/port-calls/PC-2026-TPP-0002/milestone -H 'Content-Type: application/json' \
+  -d '{"milestone_code":"SAILED","event_time":"2026-11-10 18:00","remarks":"Berangkat setelah SPB terbit"}'
 curl -s -X POST localhost:8000/api/port-calls/PC-2026-TPP-0002/disbursements -H 'Content-Type: application/json' \
   -d '{"category":"HUSBANDRY","item_name":"Bunkering 100 MT","pda_estimate":50000000,"fda_actual":0}'
 curl -s -X POST localhost:8000/api/port-calls/PC-2026-TPP-0002/close-ops -H 'Content-Type: application/json' -d '{"user":"Capt. Hadi"}'
@@ -88,7 +92,7 @@ diterbitkan); tombol **+ Tambah Item PDA/FDA** ada di tab Finance; tombol
 | `POST /api/port-calls/<id>/disbursements` | Tambah item PDA/FDA |
 | `POST /api/disbursements` | Alias tambah item PDA/FDA (pakai `port_call_id` di body) |
 | `POST /api/port-calls/<id>/dispute` | Buka tiket sengketa FDA |
-| `POST /api/port-calls/<id>/close-ops` | Otorisasi 1 (operasional) |
+| `POST /api/port-calls/<id>/close-ops` | Otorisasi 1 (operasional) — **digate**: ditolak 400 bila SPB belum terbit, SPB kedaluwarsa, atau kapal belum DEPARTED; ditolak bila sudah ditutup |
 | `POST /api/port-calls/<id>/close-finance` | Otorisasi 2 (keuangan; menolak bila ops belum tutup) |
 | `GET /api/master/ports` | Master pelabuhan + terminal + kapal |
 | `POST /api/master/terminals` | Tambah terminal |
@@ -151,6 +155,9 @@ diterbitkan); tombol **+ Tambah Item PDA/FDA** ada di tab Finance; tombol
 python3 -m py_compile server.py engine/db.py engine/laytime.py
 python3 tests/test_laytime.py
 python3 tests/test_api.py     # tes integrasi HTTP (port 8999); memutasi agency.db
+# Backend libsql (opsional, butuh paket libsql):
+pip install -r requirements.txt
+python3 tests/test_libsql_backend.py   # SKIP bila libsql belum terinstal
 ```
 
 **Perhatian:** `tests/test_api.py` memutasi `agency.db` (menutup port call
@@ -158,6 +165,37 @@ contoh, membuat port call + kapal uji). Cadangkan dulu (`cp agency.db
 /tmp/agency.db.bak`) dan kembalikan sesudahnya, atau bangun ulang DB bersih
 dengan menghapus `agency.db` lalu menjalankan `python3 server.py` sekali
 (seeding otomatis) dan menghentikannya.
+
+## Persistensi Turso (opsional — untuk deploy Vercel)
+
+Tanpa Turso, data di Vercel hanya hidup selama instance warm (salinan
+`/tmp/agency.db`), lalu reset. Dengan Turso (libSQL remote), data persisten
+dan sama untuk semua instance. Lokal tetap bisa jalan tanpa Turso.
+
+```bash
+# 1. Buat database + token (butuh Turso CLI)
+turso auth login
+turso db create ship-agency
+turso db show ship-agency --url        # -> libsql://ship-agency-xxxx.turso.io
+turso db tokens create ship-agency     # -> token (jaga baik-baik!)
+
+# 2. Lokal: salin .env.example ke .env dan isi dua variabelnya, lalu migrasikan data
+cp .env.example .env   # JANGAN commit .env (sudah di .gitignore)
+pip install -r requirements.txt
+python3 scripts/migrate_to_turso.py        # batal bila Turso sudah berisi data
+python3 scripts/migrate_to_turso.py --force  # timpa isi Turso
+python3 scripts/migrate_to_turso.py --seed   # isi Turso dengan data contoh saja
+
+# 3. Vercel: isi TURSO_DATABASE_URL + TURSO_AUTH_TOKEN di
+#    Settings -> Environment Variables, lalu deploy ulang.
+#    Tanpa kedua variabel itu, aplikasi otomatis memakai SQLite lokal.
+```
+
+Detail: `docs/adr/0009-persistensi-turso-libsql.md`. Tier gratis Turso
+(Starter): 500 database, 9 GB storage, 1 miliar baris dibaca/bulan,
+25 juta baris ditulis/bulan. Catatan: perilaku remote (PRAGMA foreign key,
+transaksi, latensi) belum terverifikasi terhadap Turso sungguhan — yang
+terverifikasi baru mode file lokal libsql (`tests/test_libsql_backend.py`).
 
 ## Keamanan & batasan (jujur)
 

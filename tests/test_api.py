@@ -9,6 +9,7 @@ import os
 import threading
 import time
 import json
+from datetime import datetime, timedelta
 import urllib.request
 import urllib.error
 
@@ -25,7 +26,7 @@ def test_integration():
     # Reset status sample port call agar test idempotent
     conn = get_db()
     with conn:
-        conn.execute("UPDATE port_calls SET ops_closed_by = NULL, ops_closed_at = NULL, finance_closed_by = NULL, finance_closed_at = NULL, status = 'PRE_ARRIVAL' WHERE id = 'PC-2026-JKT-0001'")
+        conn.execute("UPDATE port_calls SET ops_closed_by = NULL, ops_closed_at = NULL, finance_closed_by = NULL, finance_closed_at = NULL, spb_issued_at = NULL, spb_expiry_at = NULL, atd = NULL, status = 'PRE_ARRIVAL' WHERE id = 'PC-2026-JKT-0001'")
     conn.close()
 
     socketserver.TCPServer.allow_reuse_address = True  # sebelum bind (TIME_WAIT)
@@ -114,6 +115,30 @@ def test_integration():
         except urllib.error.HTTPError as e:
             assert e.code == 400
         print("[TEST 7/8] Dual Sign-off Barrier Valid (Finance tertolak sebelum Ops).")
+
+        # Gate close-ops: SPB test 5 bertanggal tetap (2026-11-05) bisa
+        # kedaluwarsa bila tes dijalankan sesudahnya — terbitkan ulang
+        # dengan issued_at = sekarang agar SPB dijamin masih berlaku,
+        # lalu catat SAILED agar status jadi DEPARTED sebelum close-ops.
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        req_spb_now = urllib.request.Request(
+            f"{base_url}/api/port-calls/{pc_id}/spb",
+            data=json.dumps({"doc_number": "SPB.IDTPP.2026.001", "issued_at": now_str}).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req_spb_now) as res:
+            assert res.status == 200
+        req_sailed = urllib.request.Request(
+            f"{base_url}/api/port-calls/{pc_id}/milestone",
+            data=json.dumps({"milestone_code": "SAILED", "event_time": now_str, "remarks": "Berangkat setelah SPB terbit"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req_sailed) as res:
+            assert res.status == 200
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc_id}") as res:
+            det = json.loads(res.read().decode("utf-8"))
+            assert det["status"] == "DEPARTED", f"SAILED harus mengubah status jadi DEPARTED, dapat {det['status']}"
+            assert det["atd"] == now_str, f"atd harus terisi dari event_time SAILED, dapat {det['atd']}"
 
         # Sekarang sign-off Ops dulu
         req_ops = urllib.request.Request(
@@ -315,6 +340,91 @@ def test_integration():
             assert "SPB_ISSUED" in actions, f"Audit harus berisi SPB_ISSUED, dapat {actions}"
             assert any(a.startswith("CLEARANCE_UPDATE") for a in actions)
         print(f"[TEST 15/15] Audit Logs tercatat ({len(logs)} entri untuk {new_pc}).")
+
+        # 16. Test Close-Ops Gate + Milestone DEPARTED Gate (PM 28/2022)
+        def _post(path, payload):
+            return urllib.request.Request(
+                f"{base_url}{path}",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"}
+            )
+
+        def _expect_400(path, payload, frag):
+            try:
+                urllib.request.urlopen(_post(path, payload))
+                assert False, f"{path} harus ditolak 400 ({frag})"
+            except urllib.error.HTTPError as e:
+                assert e.code == 400
+                body = e.read().decode("utf-8")
+                assert frag in body, f"Respons 400 harus menyebut '{frag}', dapat {body}"
+
+        # 16a. new_pc: SPB sudah terbit tapi status masih PRE_ARRIVAL
+        # -> close-ops ditolak 400 (belum DEPARTED).
+        _expect_400(f"/api/port-calls/{new_pc}/close-ops", {"user": "Capt. Hadi"}, "DEPARTED")
+        print("[TEST 16a/16] Close-Ops Gate: ditolak 400 saat kapal belum DEPARTED.")
+
+        # 16b. Terbitkan ulang SPB dengan issued_at = sekarang (agar tidak
+        # kedaluwarsa bila tes dijalankan sesudah 2026-11-11), lalu SAILED
+        # -> status DEPARTED dan atd terisi dari event_time.
+        now2 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with urllib.request.urlopen(_post(f"/api/port-calls/{new_pc}/spb",
+                {"doc_number": "SPB.TEST.002", "issued_at": now2})) as res:
+            assert res.status == 200
+        with urllib.request.urlopen(_post(f"/api/port-calls/{new_pc}/milestone",
+                {"milestone_code": "SAILED", "event_time": now2, "remarks": "Berangkat"})) as res:
+            assert res.status == 200
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{new_pc}") as res:
+            det = json.loads(res.read().decode("utf-8"))
+            assert det["status"] == "DEPARTED"
+            assert det["atd"] == now2
+        print("[TEST 16b/16] Milestone SAILED dengan SPB valid: DEPARTED + atd terisi.")
+
+        # 16c. Setelah DEPARTED, close-ops lolos.
+        with urllib.request.urlopen(_post(f"/api/port-calls/{new_pc}/close-ops",
+                {"user": "Capt. Hadi"})) as res:
+            assert res.status == 200
+        print("[TEST 16c/16] Close-Ops Gate: lolos setelah SPB valid + DEPARTED.")
+
+        # 16d. Port call baru tanpa SPB: close-ops ditolak; SAILED dicatat
+        # sebagai fakta tapi status tetap PRE_ARRIVAL (tidak jadi DEPARTED).
+        with urllib.request.urlopen(_post("/api/port-calls",
+                {"vessel_imo": "9876543", "port_code": "IDTPP",
+                 "terminal_name": "JICT (Jakarta Int. Container Terminal)",
+                 "cargo_name": "Batu Bara", "cargo_tonnage": 50000,
+                 "eta": "2026-11-12 08:00", "vessel_category": "FOREIGN"})) as res:
+            assert res.status == 200
+            pc2 = json.loads(res.read().decode("utf-8"))["port_call_id"]
+        _expect_400(f"/api/port-calls/{pc2}/close-ops", {"user": "Capt. Hadi"}, "SPB belum terbit")
+        _expect_400(f"/api/port-calls/{pc2}/milestone",
+                    {"milestone_code": "SAILED", "event_time": now2, "remarks": "Coba berangkat tanpa SPB"},
+                    "SPB belum terbit")
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc2}") as res:
+            det2 = json.loads(res.read().decode("utf-8"))
+            assert det2["status"] == "PRE_ARRIVAL", f"Status harus tetap PRE_ARRIVAL, dapat {det2['status']}"
+            assert any(m["milestone_code"] == "SAILED" for m in det2["milestones"]), "Milestone SAILED harus tetap tercatat sebagai fakta"
+            assert det2["atd"] is None, "atd harus tetap kosong bila belum DEPARTED"
+        print("[TEST 16d/16] Tanpa SPB: close-ops + DEPARTED ditolak, milestone tetap tercatat.")
+
+        # 16e. SPB kedaluwarsa (terbit 2026-10-29, lewat 24 jam): SAILED dan
+        # close-ops sama-sama ditolak.
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc2}") as res:
+            det2 = json.loads(res.read().decode("utf-8"))
+        for cl in det2["clearances"]:
+            if "SPB" in cl["doc_type"]:
+                continue
+            with urllib.request.urlopen(_post(f"/api/clearances/{cl['id']}/update",
+                    {"doc_number": f"DOC-{cl['id']}-2026", "status": "APPROVED",
+                     "remarks": "Disetujui di portal resmi"})) as res:
+                assert res.status == 200
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc2}/spb",
+                {"doc_number": "SPB.TEST.003", "issued_at": "2026-10-29 10:00:00"})) as res:
+            assert res.status == 200
+            assert json.loads(res.read().decode("utf-8"))["spb_expiry_at"] == "2026-10-30 10:00:00"
+        _expect_400(f"/api/port-calls/{pc2}/milestone",
+                    {"milestone_code": "SAILED", "event_time": now2, "remarks": "Coba berangkat dengan SPB kedaluwarsa"},
+                    "kedaluwarsa")
+        _expect_400(f"/api/port-calls/{pc2}/close-ops", {"user": "Capt. Hadi"}, "kedaluwarsa")
+        print("[TEST 16e/16] SPB kedaluwarsa: SAILED + close-ops ditolak 400.")
 
         print("\nSEMUA INTEGRATION TEST LULUS (100% VERIFIED)!")
 

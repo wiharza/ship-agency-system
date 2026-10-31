@@ -54,7 +54,11 @@ curl -s -X POST localhost:8000/api/port-calls/PC-2026-TPP-0002/milestone -H 'Con
   -d '{"milestone_code":"EOSP","event_time":"2026-11-10 07:30","remarks":"Tiba di ambang luar"}'
 curl -s -X POST localhost:8000/api/port-calls/PC-2026-TPP-0002/laytime/calculate -H 'Content-Type: application/json' \
   -d '{"nor_tendered_time":"2026-11-10 08:00","commenced_time":"2026-11-10 14:00","completed_time":"2026-11-12 14:00"}'
-# 8. Tambah item PDA/FDA, lalu tutup ops + finance (finance menolak bila ops belum tutup)
+# 8. Tambah item PDA/FDA, catat keberangkatan, lalu tutup ops + finance
+#    (close-ops DIGATE: ditolak bila SPB belum terbit/kedaluwarsa atau kapal
+#    belum DEPARTED — catat SAILED dulu, dalam masa berlaku SPB 24 jam)
+curl -s -X POST localhost:8000/api/port-calls/PC-2026-TPP-0002/milestone -H 'Content-Type: application/json' \
+  -d '{"milestone_code":"SAILED","event_time":"2026-11-10 18:00","remarks":"Berangkat setelah SPB terbit"}'
 curl -s -X POST localhost:8000/api/port-calls/PC-2026-TPP-0002/disbursements -H 'Content-Type: application/json' \
   -d '{"category":"HUSBANDRY","item_name":"Bunkering 100 MT","pda_estimate":50000000,"fda_actual":0}'
 curl -s -X POST localhost:8000/api/port-calls/PC-2026-TPP-0002/close-ops -H 'Content-Type: application/json' -d '{"user":"Capt. Hadi"}'
@@ -88,7 +92,7 @@ diterbitkan); tombol **+ Tambah Item PDA/FDA** ada di tab Finance; tombol
 | `POST /api/port-calls/<id>/disbursements` | Tambah item PDA/FDA |
 | `POST /api/disbursements` | Alias tambah item PDA/FDA (pakai `port_call_id` di body) |
 | `POST /api/port-calls/<id>/dispute` | Buka tiket sengketa FDA |
-| `POST /api/port-calls/<id>/close-ops` | Otorisasi 1 (operasional) |
+| `POST /api/port-calls/<id>/close-ops` | Otorisasi 1 (operasional) — **digate**: ditolak 400 bila SPB belum terbit, SPB kedaluwarsa, atau kapal belum DEPARTED; ditolak bila sudah ditutup |
 | `POST /api/port-calls/<id>/close-finance` | Otorisasi 2 (keuangan; menolak bila ops belum tutup) |
 | `GET /api/master/ports` | Master pelabuhan + terminal + kapal |
 | `POST /api/master/terminals` | Tambah terminal |

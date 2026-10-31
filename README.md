@@ -193,9 +193,16 @@ python3 scripts/migrate_to_turso.py --seed   # isi Turso dengan data contoh saja
 
 Detail: `docs/adr/0009-persistensi-turso-libsql.md`. Tier gratis Turso
 (Starter): 500 database, 9 GB storage, 1 miliar baris dibaca/bulan,
-25 juta baris ditulis/bulan. Catatan: perilaku remote (PRAGMA foreign key,
-transaksi, latensi) belum terverifikasi terhadap Turso sungguhan — yang
-terverifikasi baru mode file lokal libsql (`tests/test_libsql_backend.py`).
+25 juta baris ditulis/bulan. Diverifikasi 31 Okt 2026 terhadap Turso remote
+sungguhan (DB `agency-yansen`, ap-southeast-1): row_factory, foreign key,
+transaksi, dan alur gate end-to-end — semua lulus.
+
+**Kinerja (ADR-0010):** setelah env Turso diisi, request pertama di Vercel
+pernah mencapai ~39 detik karena cold start menjalankan init+seed penuh dan
+tiap request membuka koneksi remote baru. Sejak optimasi 1 Nov 2026: cold
+start hanya 2 query kesiapan bila DB sudah siap, dan koneksi remote dipakai
+ulang per thread — terukur: request pertama 2,53 dtk, request hangat
+~0,44 dtk. Sisa latensi adalah round-trip jaringan ke Turso per query.
 
 ## Keamanan & batasan (jujur)
 

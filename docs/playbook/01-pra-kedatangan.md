@@ -23,6 +23,7 @@ Sumber: PM 8 Tahun 2022 tentang Tata Cara Pelayanan Kapal Melalui Inaportnet; KM
 | Langkah | Aktor | Sistem | Keluaran | Tenggat | Bukti | Jebakan |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | PKK Masuk (pemberitahuan kedatangan) | Agen | inaportnet | Draft pemberitahuan + billing PNBP | Sebelum kedatangan; lazim H-2 sampai H-1 | Nomor pemberitahuan | Data trayek/ETA berubah tapi draft tidak direvisi — billing jadi tidak cocok |
+| PKKA (kapal asing) vs PKK (kapal domestik) | Agen | inaportnet / INSW | Nomor PKKA (asing) atau PKK (domestik) | Paling lambat 1x24 jam sebelum tiba (PM 28/2022 Ps 4) | Nomor trayek | Kapal asing diajukan sebagai PKK domestik (atau sebaliknya) — ditolak verifikasi; di sistem, template clearance membedakan keduanya otomatis dari `vessel_category` |
 | SPM (Surat Persetujuan Masuk) | Penyelenggara pelabuhan | inaportnet (SIMPADU) | SPM terbit / penolakan | Sebelum kapal masuk | Salinan SPM | SPM tidak terbit karena sertifikasi kapal di SIMKAPEL tidak lengkap |
 
 Catatan: verifikasi status sertifikasi kelaiklautan kapal merujuk database SIMKAPEL (e-DPKN). Kapal bersertifikat kedaluwarsa akan tertahan di tahap ini.
@@ -88,6 +89,19 @@ Berlaku ketika kapal membawa Media Pembawa HPKH, HPIK, atau OPTK — termasuk pr
 Sumber: [UU 21/2019 — JDIH BPK](https://peraturan.bpk.go.id/Details/122046/uu-no-21-tahun-2019). Diakses 30 Oktober 2026.
 
 ---
+
+## 1.6A INSW vs Inaportnet — dua portal, jangan disamakan
+
+**INSW** (Indonesia National Single Window) adalah single window nasional
+lintas instansi. Alur agen di INSW: **Warta I** (data agen/operator),
+**Warta II** (data kapal + sertifikat), **Warta III** (data barang/manifest),
+**Warta IV** (data orang/crew list), **Warta V** (permohonan ke
+Kemenhub, Kemenkeu/RKSP, Kemenkes/SINKARKES, Imigrasi).
+**Inaportnet** (PM 8/2022) adalah layanan kapal Ditjen Hubla (5 layanan,
+termasuk modul SPS untuk SPB/SPKK/SPOG). Sistem tracker ini **tidak
+terhubung** ke keduanya — agen mengajukan di portal resmi, lalu mencatat
+nomor dokumen + status + tenggat di tracker (ADR-0004). Detail:
+`docs/playbook/lampiran/checklist-clearance-in-out.md`.
 
 ## 1.7 Persiapan finansial & logistik
 

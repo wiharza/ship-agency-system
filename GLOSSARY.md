@@ -38,6 +38,82 @@ _Avoid_: Surat pandu, izin sandar
 Pemberitahuan rencana kedatangan kapal asing yang diajukan agen lewat sistem, dengan nomor trayek.
 _Avoid_: PKK, PPKB (PKK = ke imigrasi, PPKB = ke Pelindo)
 
+**PKK (Pemberitahuan Kedatangan Kapal)**:
+Pemberitahuan kedatangan kapal — dalam sistem ini dipakai untuk kapal
+domestik (Warta Masuk / PKK), berbeda dengan PKKA untuk kapal asing.
+Istilah yang sama juga dipakai untuk surat pemberitahuan kedatangan ke
+Imigrasi; periksa konteksnya (pelabuhan vs TPI).
+_Avoid_: PKKA (khusus kapal asing)
+
+**INSW (Indonesia National Single Window)**:
+Portal tunggal nasional lintas instansi untuk penyampaian data dan dokumen
+kepabeanan/perizinan. Alur agen: Warta I (data agen/operator), Warta II
+(data kapal + sertifikat), Warta III (data barang/manifest), Warta IV
+(data orang/crew list), Warta V (permohonan ke Kemenhub, Kemenkeu/RKSP,
+Kemenkes/SINKARKES, Imigrasi). Berbeda dengan Inaportnet — jangan disamakan.
+_Avoid_: Inaportnet, CEISA (CEISA hanya modul Bea Cukai)
+
+**Warta I–V**:
+Lima kelompok isian di INSW (lihat INSW). Sistem tracker ini tidak
+mengirim Warta I–V; agen mengisinya di portal INSW, lalu mencatat nomor
+dokumen dan statusnya di tracker.
+
+**MSD (Master Sailing Declaration)**:
+Surat pernyataan nakhoda bahwa kapal, muatan, dan awak telah memenuhi
+syarat keselamatan dan keamanan pelayaran; syarat permohonan SPB
+(PM 28/2022 Ps 11).
+_Avoid_: Surat pernyataan berlayar
+
+**Free Pratique / Port Health Clearance**:
+Persetujuan karantina kesehatan bahwa kapal bebas penyakit menular dan boleh
+berhubungan dengan darat. Tanpa persetujuan ini Syahbandar dilarang
+menerbitkan SPB.
+_Avoid_: Sertifikat kesehatan kapal (itu dokumen pendukung, bukan izinnya)
+
+**RKSP / BC 1.0 (Rencana Kedatangan Sarana Pengangkut)**:
+Pemberitahuan rencana kedatangan sarana pengangkut ke Bea Cukai, paling
+lambat 24 jam sebelum kedatangan (tempuh ≥ 24 jam).
+_Avoid_: Manifest (manifest adalah BC 1.1)
+
+**Inward Manifest / BC 1.1**:
+Manifes barang masuk yang diserahkan ke Bea Cukai sebelum bongkar; versi
+keluarnya adalah Outward Manifest / BC 1.1, diserahkan sebelum berangkat.
+Manifes nihil wajib bila kapal tanpa muatan.
+_Avoid_: BC 1.2 (penamaan lama di lapangan; yang berlaku BC 1.1 untuk
+inward maupun outward)
+
+**SPKK (Surat Persetujuan Kegiatan Kapal)**:
+Persetujuan Syahbandar untuk kegiatan kapal di pelabuhan (mis. bongkar/muat
+oleh PBM) sebelum alat bekerja.
+_Avoid_: SPB, SPOG
+
+**TPI (Tempat Pemeriksaan Imigrasi)**:
+Titik pemeriksaan keimigrasian di pelabuhan — tempat pemeriksaan paspor,
+penerbitan shore pass, dan sign on/off awak.
+_Avoid_: Kantor Imigrasi (TPI adalah fungsinya di pelabuhan)
+
+**SINKARKES**:
+Sistem Informasi Karantina Kesehatan Kemenkes — portal pengajuan MDH dan
+Port Health Clearance.
+_Avoid_: Inaportnet
+
+**Simkapel**:
+Sistem Informasi Manajemen Kapal dan Pelaut (Ditjen Hubla) — sertifikasi
+kapal dan pelaut; prasyarat kelaiklautan untuk SPB, bukan penerbit SPB.
+_Avoid_: Inaportnet
+
+**PNBP / SIMPONI / NTPN**:
+PNBP adalah Penerimaan Negara Bukan Pajak (mis. jasa rambu/labuh). SIMPONI
+adalah sistem pembayaran PNBP; NTPN adalah Nomor Transaksi Penerimaan Negara
+bukti bayarnya. Sistem hanya mencatat nomor billing/NTPN, tidak menghitung
+tarif.
+_Avoid_: Pajak, invoice PNBP
+
+**Shore Pass**:
+Kartu izin awak kapal asing turun ke darat di area pelabuhan, diterbitkan
+Imigrasi (TPI); ditarik kembali saat clearance out.
+_Avoid_: Visa, paspor
+
 **CIGP**:
 Empat instansi wajib yang dilewati agen: Customs (Bea Cukai), Immigration, Quarantine (karantina), Port Authority (syahbandar).
 _Avoid_: Instansi terkait, stakeholder

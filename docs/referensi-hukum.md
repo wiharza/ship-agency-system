@@ -6,8 +6,8 @@ Dokumen ini memuat kutipan persis (verbatim) pasal-pasal regulasi resmi hasil ve
 > **PM 65/2019** tentang keagenan kapal — peraturan itu **sudah digantikan
 > PM 59/2021** (lihat `docs/adr/0006-*` dan README). Bila ada perbedaan
 > antara kutipan PM 65/2019 di §2 dan PM 59/2021, yang berlaku adalah
-> PM 59/2021. Demikian pula `docs/spec/prd.md` yang masih menyebut PM 65/2019
-> sebagai referensi lama.
+> PM 59/2021. `docs/spec/prd.md` §1.1 sudah diperbaiki ke PM 59/2021 pada
+> 31 Okt 2026 (lihat PRD §9).
 
 ---
 
@@ -38,7 +38,26 @@ Dokumen ini memuat kutipan persis (verbatim) pasal-pasal regulasi resmi hasil ve
 
 ---
 
-## 2. PM Perhubungan No. PM 65 Tahun 2019 tentang Penyelenggaraan dan Pengusahaan Keagenan Kapal
+## 2. PM Perhubungan No. PM 65 Tahun 2019 tentang Penyelenggaraan dan Pengusahaan Keagenan Kapal — DIGANTI PM 59/2021
+
+> **Status:** PM 65/2019 **sudah digantikan oleh PM 59/2021 tentang
+> Penyelenggaraan dan Pengusahaan Keagenan Kapal.** Kutipan verbatim di
+> bawah ini dipertahankan sebagai arsip historis (isi substantifnya —
+> definisi keagenan, jenis kegiatan, kewajiban agen — sejalan dengan rezim
+> penggantinya), tetapi **rujukan operasional sistem adalah PM 59/2021**.
+> Bila ada perbedaan antara PM 65/2019 dan PM 59/2021, yang berlaku adalah
+> PM 59/2021.
+
+### 2A. PM 59/2021 — peraturan keagenan yang berlaku saat ini
+
+- PM 59/2021 tentang Penyelenggaraan dan Pengusahaan Keagenan Kapal
+  menggantikan PM 65/2019 sebagai dasar penyelenggaraan usaha keagenan kapal.
+- Keagenan kapal adalah usaha jasa terkait dengan angkutan di perairan
+  (UU 17/2008 Ps 31 ayat (2) huruf j; PP 31/2021 Ps 9 ayat (2) huruf j).
+- Sistem memakai PM 59/2021 sebagai rujukan keagenan (lihat README dan
+  `docs/adr/0006-*`); kutipan pasal-per-pasal PM 59/2021 belum dimasukkan
+  ke dokumen ini — tambahkan dari teks resmi JDIH Dephub bila diperlukan,
+  jangan dari ingatan.
 
 ### Definisi & Ruang Lingkup
 - **Pasal 1 angka 1**:
@@ -88,6 +107,17 @@ Berdasarkan Pasal 3, tugas agen kapal meliputi:
 - **Pasal 28**: Kapal yang tidak menyampaikan warta dan dokumen kapal sebelum tiba tidak akan diberikan SPB maupun SPKK.
 
 ---
+
+## 3A. PM Perhubungan No. PM 8 Tahun 2022 tentang Tata Cara Pelayanan Kapal Melalui Inaportnet
+
+- Inaportnet adalah sistem layanan kapal elektronik Ditjen Perhubungan Laut
+  dengan 5 layanan: kapal masuk, perpanjangan tambat/labuh, pindah
+  tambat/labuh, kapal keluar, dan pembatalan.
+- Verifikasi kedatangan paling lambat 6 jam sebelum ETA; verifikasi
+  keberangkatan paling lambat 4 jam sebelum ETD (kapal barang).
+- **Berbeda dengan INSW** (single window nasional lintas instansi, Warta
+  I–V) — keduanya dipakai agen, jangan disamakan. Penjelasan lengkap:
+  `docs/playbook/lampiran/checklist-clearance-in-out.md`.
 
 ## 4. Ketentuan CIGP (Customs, Immigration, Quarantine, Port Health)
 

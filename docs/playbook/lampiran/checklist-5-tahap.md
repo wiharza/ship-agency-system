@@ -1,5 +1,12 @@
 # Lampiran 1: Daftar Periksa Kendali Mutu (Checklist 5 Tahap Port Call)
 
+> Lihat juga **Lampiran: Checklist Clearance In & Out**
+> (`docs/playbook/lampiran/checklist-clearance-in-out.md`) — versi yang
+> selaras dengan template 12 item dan tenggat yang dihitung sistem
+> (`GET /api/port-calls/<id>/clearance-checklist`): RKSP & warta kapal
+> ETA−24 jam, Inward Manifest sebelum bongkar/ETA−24 jam, Outward Manifest
+> sebelum ETD, permohonan SPB ETD−4 jam, SPB berlaku 24 jam.
+
 Daftar periksa ini digunakan oleh Staf Dokumen, Staf Operasional Lapangan, dan Staf Keuangan untuk memvalidasi kepatuhan prosedur dan kelengkapan dokumen pada setiap tahap.
 
 ---

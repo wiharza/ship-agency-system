@@ -119,6 +119,32 @@ diterbitkan); tombol **+ Tambah Item PDA/FDA** ada di tab Finance; tombol
   checklist: `docs/playbook/lampiran/checklist-clearance-in-out.md`;
   keputusan arsitektur: `docs/adr/`.
 
+## Dokumen & spesifikasi (perubahan 31 Okt 2026)
+
+- **PRD** (`docs/spec/prd.md`): §1.1 diperbaiki PM 65/2019 → **PM 59/2021**;
+  enum status §4.1/§4.2 diselaraskan dengan kode (`PRE_ARRIVAL…CLOSED`,
+  `PENDING…EXPIRED`); ditambahkan gate SPB, template clearance 12 item,
+  endpoint baru, dan **§9 Status Implementasi** — tabel sumber kebenaran vs
+  kode. Fitur yang belum ada (RBAC, dashboard, tab timeline, auto-save SOF
+  offline, notifikasi email/Telegram, HTTPS/TLS) ditandai **[TARGET]**,
+  bukan diklaim sudah ada.
+- **Referensi hukum** (`docs/referensi-hukum.md`): §2 PM 65/2019 diberi label
+  **digantikan PM 59/2021** (kutipan verbatim dipertahankan sebagai arsip)
+  + §2A ringkasan PM 59/2021; ditambah §3A PM 8/2022 (Inaportnet, 5 layanan).
+  UU 6/2018 sudah konsisten sebagai "dicabut UU 17/2023" (§4).
+- **Playbook**: Tahap 1 ditambah §1.6A INSW vs Inaportnet (Warta I–V) dan
+  baris PKKA vs PKK; Tahap 2 §2.6 diperbaiki ke PM 59/2021; Tahap 3 §3.4
+  ditandai auto-save offline belum diimplementasi; Tahap 4 §4.6 diselaraskan
+  ke permohonan SPB ETD−4 jam + gate SPB; Tahap 5 §5.2 diperbaiki nama file
+  `engine/laytime.py`; Lampiran checklist 5 tahap menunjuk ke lampiran
+  checklist clearance in/out yang selaras dengan kode.
+- **Keputusan/ADR**: `docs/keputusan.md` Q33–Q37 (gate SPB, template 12,
+  audit, kejujuran spec, ETD opsional); `docs/adr/0006-*` (gate/tenggat/
+  audit) dan `docs/adr/0007-*` (PRD sebagai target, bukan klaim implementasi).
+- **Glosarium** (`GLOSSARY.md`): ditambah INSW, Warta I–V, PKK, MSD,
+  Free Pratique, RKSP/BC 1.0, BC 1.1, SPKK, TPI, SINKARKES, Simkapel,
+  PNBP/SIMPONI/NTPN, Shore Pass.
+
 ## Cara menjalankan tes
 
 ```bash

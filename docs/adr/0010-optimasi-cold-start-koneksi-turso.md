@@ -22,13 +22,19 @@ langsung di deployment (31 Okt 2026, 23:39 WIB): request pertama
 
 ### 1. Pemeriksaan kesiapan murah (server.py `_prepare_database_once()`)
 
-Cold start sekarang hanya menjalankan 2 query:
+Cold start sekarang hanya menjalankan 1 query:
 
-- `SELECT name FROM sqlite_master WHERE type='table'` — bila semua tabel
-  di `TABLES` (engine/db.py, satu sumber kebenaran, 13 tabel) ada, lanjut;
-  bila ada yang kurang, jalankan `init_db()` + `seed_sample_data()` penuh.
-- `SELECT COUNT(*) FROM port_calls` — bila 0, jalankan `seed_sample_data()`
-  saja; bila > 0, tidak ada lagi yang dijalankan.
+- `SELECT (SELECT COUNT(*) FROM master_ports), (SELECT COUNT(*) FROM
+  port_calls)` — bila keduanya > 0, tidak ada lagi yang dijalankan; bila
+  salah satu 0, jalankan `seed_sample_data()` saja; bila tabelnya belum
+  ada, query gagal dengan "no such table" dan `init_db()` + seed penuh
+  dijalankan.
+- (Revisi 1 Nov 2026: versi pertama memakai 2 query — `sqlite_master` +
+  `COUNT port_calls` — untuk mendeteksi tabel yang hilang. Ide 1-query
+  dari `turso-speedup.patch` (hanya `COUNT master_ports`) diadopsi dalam
+  bentuk gabungan ini, supaya tetap mendeteksi tabel yang hilang
+  — query gabungan gagal bila salah satu tabel tidak ada — dengan biaya
+  1 round-trip. Terukur: cold start 4 statement → 3 statement.)
 
 Bila koneksi remote putus di tengah cold start, koneksi yang di-cache
 dibuang dan percobaan diulang sekali (`_ensure_database_ready()`).
@@ -66,6 +72,7 @@ ap-southeast-1), proses baru, 1 Nov 2026:
 | Pertama (cold start) | ~39 dtk | **2,53 dtk** |
 | Kedua (warm) | — (tiap request buka koneksi baru) | **0,44 dtk** |
 | POST close-ops (gate 400) | 39,45 dtk | **0,45 dtk** |
+| Statement cold start | 31 statement + 3 koneksi | **3 statement + 1 koneksi** (diukur ulang 1 Nov 2026 dengan statement counter; revisi 1-query dari 4 statement) |
 
 Sisa latensi (~0,45 dtk/request hangat) adalah satu round-trip jaringan
 ke Turso Singapura per query — tidak bisa dihilangkan tanpa mengubah

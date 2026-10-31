@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from email.message import Message as WSGIHeaders
 
-from engine.db import get_db, init_db, seed_sample_data, calculate_file_sha256, log_audit, TABLES, drop_remote_connection
+from engine.db import get_db, init_db, seed_sample_data, calculate_file_sha256, log_audit, drop_remote_connection
 from engine.laytime import LaytimeCalculator, parse_iso
 
 PORT = 8000
@@ -1042,22 +1042,29 @@ def _prepare_database_once():
     seed_sample_data() penuh: 13 CREATE TABLE IF NOT EXISTS + belasan
     SELECT COUNT + INSERT — masing-masing satu round-trip ke Turso
     (~600 ms dari VM ini) sehingga cold start pertama mencapai ~39 dtk.
-    Sekarang cukup 2 query: daftar nama tabel dari sqlite_master, lalu
-    COUNT(*) port_calls. Bila semua tabel ada dan sudah ada port call,
-    tidak ada lagi yang dijalankan. Bila tabel belum lengkap -> init_db()
-    + seed. Bila tabel lengkap tapi kosong -> seed saja.
-    (sqlite_sequence dari AUTOINCREMENT ikut muncul di sqlite_master;
-    pemeriksaan memakai issubset sehingga tabel ekstra diabaikan.)"""
+    Sekarang cukup 1 query: dua COUNT dalam satu statement
+    (master_ports + port_calls). Bila keduanya > 0, tidak ada lagi yang
+    dijalankan. Bila salah satu 0 -> seed_sample_data() saja (mengisi tabel
+    yang kosong; idempoten). Bila tabelnya belum ada sama sekali, query
+    gagal dengan "no such table" -> init_db() + seed penuh.
+    (Satu statement, bukan dua: COUNT gabungan ini adalah ide dari
+    turso-speedup.patch — bedanya, patch itu hanya mengecek master_ports,
+    sehingga DB yang tabelnya tidak lengkap lolos tanpa diperbaiki.)"""
     conn = get_db()
     try:
-        names = {r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-        if not set(TABLES).issubset(names):
+        try:
+            row = conn.execute(
+                "SELECT (SELECT COUNT(*) FROM master_ports) AS n_ports, "
+                "(SELECT COUNT(*) FROM port_calls) AS n_pc").fetchone()
+        except Exception as exc:
+            if "no such table" not in str(exc):
+                raise
+            row = None  # DB baru, tabel belum ada -> init penuh di bawah
+        if row is None:
             init_db()
             seed_sample_data()
             return
-        n = conn.execute("SELECT COUNT(*) FROM port_calls").fetchone()[0]
-        if n == 0:
+        if row[0] == 0 or row[1] == 0:
             seed_sample_data()
     finally:
         conn.close()

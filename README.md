@@ -200,8 +200,8 @@ transaksi, dan alur gate end-to-end — semua lulus.
 **Kinerja (ADR-0010):** setelah env Turso diisi, request pertama di Vercel
 pernah mencapai ~39 detik karena cold start menjalankan init+seed penuh dan
 tiap request membuka koneksi remote baru. Sejak optimasi 1 Nov 2026: cold
-start hanya 2 query kesiapan bila DB sudah siap, dan koneksi remote dipakai
-ulang per thread — terukur: request pertama 2,53 dtk, request hangat
+start hanya 1 query kesiapan bila DB sudah siap, dan koneksi remote dipakai
+ulang per thread — terukur: request pertama 2,53 dtk (3 statement), request hangat
 ~0,44 dtk. Sisa latensi adalah round-trip jaringan ke Turso per query.
 
 ## Keamanan & batasan (jujur)

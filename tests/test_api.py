@@ -21,6 +21,13 @@ TEST_PORT = 8999
 
 
 def test_integration():
+    from engine.db import get_db
+    # Reset status sample port call agar test idempotent
+    conn = get_db()
+    with conn:
+        conn.execute("UPDATE port_calls SET ops_closed_by = NULL, ops_closed_at = NULL, finance_closed_by = NULL, finance_closed_at = NULL, status = 'PRE_ARRIVAL' WHERE id = 'PC-2026-JKT-0001'")
+    conn.close()
+
     server = socketserver.TCPServer(("", TEST_PORT), AgencyAPIHandler)
     server.allow_reuse_address = True
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)

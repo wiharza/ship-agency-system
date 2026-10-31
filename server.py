@@ -170,6 +170,55 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
         except Exception:
             payload = {}
 
+        if path == "/api/port-calls":
+            # POST /api/port-calls (Tambah Port Call Baru)
+            branch_id = payload.get("branch_id", "BR-JKT")
+            vessel_imo = payload.get("vessel_imo")
+            principal_id = payload.get("principal_id", "PR-PAC")
+            vessel_category = payload.get("vessel_category", "FOREIGN")
+            port_code = payload.get("port_code", "IDTPP")
+            terminal_name = payload.get("terminal_name", "Terminal Umum")
+            eta = payload.get("eta", datetime.now().strftime("%Y-%m-%d %H:%M"))
+            cargo_name = payload.get("cargo_name", "General Cargo")
+            cargo_tonnage = float(payload.get("cargo_tonnage", 10000))
+
+            if not vessel_imo:
+                self.send_json({"error": "IMO kapal wajib diisi"}, status=400)
+                return
+
+            conn = get_db()
+            c = conn.cursor()
+            # Generate ID: PC-YYYY-PORT-XXXX
+            year_str = datetime.now().strftime("%Y")
+            c.execute("SELECT COUNT(*) FROM port_calls WHERE id LIKE ?", (f"PC-{year_str}%",))
+            count = c.fetchone()[0] + 1
+            pc_id = f"PC-{year_str}-{port_code[2:]}-{count:04d}"
+
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with conn:
+                conn.execute("""
+                INSERT INTO port_calls (id, branch_id, vessel_imo, principal_id, vessel_category, port_code, terminal_name, status, eta, cargo_name, cargo_tonnage, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'PRE_ARRIVAL', ?, ?, ?, ?, ?)
+                """, (pc_id, branch_id, vessel_imo, principal_id, vessel_category, port_code, terminal_name, eta, cargo_name, cargo_tonnage, now_str, now_str))
+
+                # Default CP params
+                conn.execute("""
+                INSERT INTO port_call_charter_parties VALUES (?, 'Charterer Standard', 10000, 'SHINC', 20000, 10000, 6)
+                """, (pc_id,))
+
+                # Clearances default template
+                conn.execute("""
+                INSERT INTO clearances (port_call_id, agency, doc_type, status, remarks) VALUES
+                (?, 'INAPORTNET_SIMPADU', 'Warta Masuk / PKK', 'PENDING', 'Menunggu input PPK'),
+                (?, 'BEA_CUKAI', 'RKSP / BC 1.0', 'PENDING', 'Wajib 24 jam pra-tiba'),
+                (?, 'KARANTINA_KESEHATAN', 'MDH & Free Pratique', 'PENDING', 'Pemeriksaan karantina'),
+                (?, 'INAPORTNET_SPS', 'SPB (Surat Persetujuan Berlayar)', 'PENDING', 'Diterbitkan saat clearance out')
+                """, (pc_id, pc_id, pc_id, pc_id))
+
+            conn.close()
+            self.send_json({"status": "success", "port_call_id": pc_id, "message": f"Port Call {pc_id} berhasil dibuat"})
+            return
+
         if path.startswith("/api/port-calls/"):
             parts = path.strip("/").split("/")
 

@@ -82,7 +82,10 @@
     <!-- Kolom Kiri: Port Calls List -->
     <div>
       <div class="card">
-        <h3>Daftar Port Call Aktif</h3>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+          <h3 style="margin: 0;">Port Calls</h3>
+          <button class="btn btn-cyan" style="padding: 4px 10px; font-size: 11px;" onclick="openNewPortCallModal()">+ Tambah</button>
+        </div>
         <div id="pc-list">Memuat data port call...</div>
       </div>
     </div>
@@ -624,6 +627,37 @@
       setTimeout(() => {
         document.getElementById('storage-status').innerText = "💾 Tersimpan lokal di peramban (Aman dari sinyal blank-spot)";
       }, 3000);
+    }
+
+    async function openNewPortCallModal() {
+      const imo = prompt("Masukkan Nomor IMO Kapal (contoh: 9876543 atau 9431289):", "9876543");
+      if (!imo) return;
+      const portCode = prompt("Masukkan Kode Pelabuhan (IDTPP / IDTPS / IDBTM):", "IDTPP");
+      if (!portCode) return;
+      const cargo = prompt("Jenis Muatan:", "Batu Bara (Bulk Coal)");
+      if (!cargo) return;
+      const tonnage = prompt("Tonase Muatan (MT):", "50000");
+      if (!tonnage) return;
+
+      const res = await fetch('/api/port-calls', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          vessel_imo: imo,
+          port_code: portCode,
+          cargo_name: cargo,
+          cargo_tonnage: parseFloat(tonnage),
+          vessel_category: imo === "9876543" ? "DOMESTIC" : "FOREIGN"
+        })
+      });
+      const data = await res.json();
+      if (data.status === 'success') {
+        alert(data.message);
+        await loadPortCalls();
+        selectPortCall(data.port_call_id);
+      } else {
+        alert("Gagal: " + (data.error || "Terjadi kesalahan"));
+      }
     }
 
     window.onload = loadPortCalls;

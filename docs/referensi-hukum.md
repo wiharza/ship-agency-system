@@ -2,6 +2,13 @@
 
 Dokumen ini memuat kutipan persis (verbatim) pasal-pasal regulasi resmi hasil verifikasi database hukum pemerintah (JDIH Dephub, JDIH BPK, JDIH Kemenkeu, JDIH Kemkes).
 
+> **Koreksi 31 Okt 2026 (bukan penghapusan isi):** §2 di bawah mengutip
+> **PM 65/2019** tentang keagenan kapal — peraturan itu **sudah digantikan
+> PM 59/2021** (lihat `docs/adr/0006-*` dan README). Bila ada perbedaan
+> antara kutipan PM 65/2019 di §2 dan PM 59/2021, yang berlaku adalah
+> PM 59/2021. Demikian pula `docs/spec/prd.md` yang masih menyebut PM 65/2019
+> sebagai referensi lama.
+
 ---
 
 ## 1. UU No. 17 Tahun 2008 tentang Pelayaran (jo. UU No. 66 Tahun 2024)

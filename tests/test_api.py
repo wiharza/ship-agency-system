@@ -360,10 +360,16 @@ def test_integration():
             assert len(chk["clearance_in"]) == 6 and len(chk["clearance_out"]) == 6
             rksp = next(i for i in chk["items"] if i["category"] == "rksp")
             assert rksp["deadline"] == "2026-11-09 08:00", f"RKSP deadline harus ETA-24 jam, dapat {rksp['deadline']}"
-        # IMO uji harus unik per run (DB dipakai ulang antar run tes)
+        # IMO uji harus unik per run (DB dipakai ulang antar run tes).
         with urllib.request.urlopen(f"{base_url}/api/master/ports") as res:
             existing_imos = {v["imo"] for v in json.loads(res.read().decode("utf-8"))["vessels"]}
-        test_imo = next(i for i in ("9999999", "9999998", "9999997", "9999996") if i not in existing_imos)
+        # Pool 4 nilai awal habis setelah 4 run; bila habis, pakai IMO
+        # dari timestamp (unik per detik) supaya suite bisa diulang
+        # tanpa batas tanpa mengotori DB dengan IMO yang sama.
+        test_imo = next((i for i in ("9999999", "9999998", "9999997", "9999996") if i not in existing_imos), None)
+        if test_imo is None:
+            test_imo = "9" + str(int(time.time()))[-6:]
+            assert test_imo not in existing_imos, "IMO timestamp bentrok — jalankan ulang tes"
         req_vessel = urllib.request.Request(
             f"{base_url}/api/master/vessels",
             data=json.dumps({"imo": test_imo, "name": "MV. TEST BARU", "flag": "ID",

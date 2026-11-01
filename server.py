@@ -1187,14 +1187,28 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(b"UI file not found")
 
 
+class _ThreadedServer(socketserver.ThreadingTCPServer):
+    # Satu thread per koneksi (ADR-0013). Server lama (TCPServer) memproses
+    # request satu per satu secara berurutan — satu koneksi menggantung
+    # (mis. preconnect browser yang tidak mengirim request) memblokir
+    # SEMUA request berikutnya sampai koneksi itu ditutup. Dengan thread
+    # per koneksi, request lain tetap dilayani. daemon_threads=True supaya
+    # Ctrl+C / shutdown tidak menunggu koneksi yang masih terbuka.
+    # Aman untuk thread: get_db() membuat koneksi SQLite baru per panggilan
+    # (tidak ada koneksi yang dipakai lintas thread), koneksi libsql remote
+    # di-cache per thread (threading.local), dan rate limit login sudah
+    # memakai lock sendiri.
+    daemon_threads = True
+    allow_reuse_address = True  # restart cepat tidak kena TIME_WAIT
+
+
 def run_server(port=PORT):
     # Gagal cepat bila SESSION_SECRET belum diisi (ADR-0011): lebih baik
     # server tidak jalan sama sekali daripada jalan tanpa autentikasi.
     get_session_secret()
     init_db()
     seed_sample_data()
-    socketserver.TCPServer.allow_reuse_address = True  # harus sebelum bind, agar restart cepat tidak kena TIME_WAIT
-    server = socketserver.TCPServer(("", port), AgencyAPIHandler)
+    server = _ThreadedServer(("", port), AgencyAPIHandler)
     print(f"Server Keagenan Kapal berjalan di http://localhost:{port}")
     try:
         server.serve_forever()

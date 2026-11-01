@@ -25,6 +25,7 @@ TABLES = [
     "master_ports", "master_terminals", "master_vessels", "master_branches",
     "master_principals", "port_calls", "port_call_charter_parties", "clearances",
     "milestones", "sof_stoppages", "disbursements", "fda_disputes", "audit_logs",
+    "users",
 ]
 
 
@@ -498,6 +499,21 @@ def init_db():
         )
         """)
 
+        # Pengguna aplikasi (ADR-0011): identitas + role untuk autentikasi.
+        # Password TIDAK pernah plaintext — hanya hash PBKDF2 (lihat
+        # engine/auth.py). Tidak ada user bawaan di-seed: user pertama
+        # dibuat lewat scripts/create_user.py (tidak ada pendaftaran publik).
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            full_name TEXT NOT NULL,
+            role TEXT NOT NULL CHECK(role IN ('OPS', 'FINANCE', 'ADMIN')),
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL
+        )
+        """)
+
     conn.close()
 
 
@@ -652,7 +668,52 @@ def seed_sample_data():
             (sample_id,),
         )
 
+    # User default (ADR-0011, Q42): dibuat saat DB pertama kali di-seed,
+    # supaya login langsung bisa dipakai tanpa script tambahan. Password
+    # diambil dari env SEED_OPS_PASSWORD / SEED_FIN_PASSWORD bila diisi;
+    # bila tidak, pakai password default yang TERDOKUMENTASI di README —
+    # WAJIB diganti setelah login pertama:
+    #   python3 scripts/create_user.py ops_jakarta --update
+    #   python3 scripts/create_user.py fin_jakarta --update
+    # Peringatan dicetak ke log saat user default dibuat, supaya tidak
+    # ada yang lupa menggantinya.
+    for _username, _full_name, _role, _env_key, _default_pw in (
+        ("ops_jakarta", "Ops Jakarta", "OPS", "SEED_OPS_PASSWORD", "OpsJakarta2026"),
+        ("fin_jakarta", "Finance Jakarta", "FINANCE", "SEED_FIN_PASSWORD", "FinJakarta2026"),
+    ):
+        _password = os.environ.get(_env_key, "").strip() or _default_pw
+        if create_user(conn, _username, _password, _full_name, _role):
+            if _password == _default_pw:
+                print(f"PERINGATAN: user default '{_username}' dibuat dengan "
+                      f"password default '{_default_pw}' — segera ganti: "
+                      f"python3 scripts/create_user.py {_username} --update")
+
     conn.close()
+
+
+def create_user(conn, username, password, full_name, role):
+    """Buat user baru (atau timpa bila sudah ada dan update=True di pemanggil).
+
+    Dipakai scripts/create_user.py dan tes. Password di-hash di sini, tidak
+    pernah disimpan plaintext. Kembalikan True bila user baru dibuat,
+    False bila username sudah ada."""
+    from engine.auth import hash_password, ROLES
+    if role not in ROLES:
+        raise ValueError(f"Role harus salah satu dari {ROLES}")
+    username = (username or "").strip()
+    if not username:
+        raise ValueError("Username wajib diisi")
+    exists = conn.execute(
+        "SELECT 1 FROM users WHERE username = ?", (username,)).fetchone()
+    if exists:
+        return False
+    conn.execute(
+        "INSERT INTO users (username, password_hash, full_name, role, active, created_at) "
+        "VALUES (?, ?, ?, ?, 1, ?)",
+        (username, hash_password(password), (full_name or "").strip() or username,
+         role, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
+    return True
 
 
 def log_audit(conn, port_call_id, user_id, action, old_value=None, new_value=None):

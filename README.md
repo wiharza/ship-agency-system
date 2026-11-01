@@ -20,9 +20,16 @@ baru), SQLite, UI HTML di `ui/index.html`.
 ## Cara menjalankan
 
 ```bash
+export SESSION_SECRET=$(python3 -c "import os;print(os.urandom(32).hex())")
+python3 scripts/create_user.py ops_jakarta --full-name "Ops Jakarta" --role OPS
+python3 scripts/create_user.py fin_jakarta --full-name "Finance Jakarta" --role FINANCE
 python3 server.py            # atau: python3 server.py 8000
-# Buka http://localhost:8000
+# Buka http://localhost:8000 — login dulu dengan user di atas
 ```
+
+Tanpa `SESSION_SECRET` server menolak jalan. User dibuat lewat
+`scripts/create_user.py` (tidak ada user bawaan / pendaftaran publik).
+Detail autentikasi: [Autentikasi (ADR-0011)](#autentikasi-adr-0011-1-nov-2026).
 
 Server menjalankan `init_db()` + `seed_sample_data()` saat start. Data contoh
 yang ter-seed: 4 pelabuhan, 15 terminal, 2 cabang, 2 principal, 2 kapal, dan
@@ -32,39 +39,51 @@ dengan nomor contoh, sehingga siap dipakai demo penerbitan SPB).
 
 ## Alur demo end-to-end (dengan DB baru)
 
+Semua panggilan API butuh login — cookie disimpan di file lalu dipakai
+ulang (`-c`/`-b`). Role OPS untuk close-ops, FINANCE untuk close-finance.
+
 ```bash
 # 1. Mulai dari DB baru (cadangkan dulu bila ada data)
 mv agency.db /tmp/agency.db.bak
+export SESSION_SECRET=$(python3 -c "import os;print(os.urandom(32).hex())")
+python3 scripts/create_user.py ops_jakarta --full-name "Ops Jakarta" --role OPS
+python3 scripts/create_user.py fin_jakarta --full-name "Finance Jakarta" --role FINANCE
 python3 server.py 8000 &
+# 1b. Login sebagai OPS (cookie disimpan di cookies-ops.txt)
+curl -s -c cookies-ops.txt -X POST localhost:8000/api/login -H 'Content-Type: application/json' \
+  -d '{"username":"ops_jakarta","password":"<password-ops>"}'
 # 2. Buat port call baru (kapal asing; template clearance 12 item dibuat otomatis)
-curl -s -X POST localhost:8000/api/port-calls -H 'Content-Type: application/json' \
+curl -s -b cookies-ops.txt -X POST localhost:8000/api/port-calls -H 'Content-Type: application/json' \
   -d '{"vessel_imo":"9431289","port_code":"IDTPP","terminal_name":"JICT (Jakarta Int. Container Terminal)","cargo_name":"Peti Kemas","cargo_tonnage":25000,"eta":"2026-11-10 08:00","vessel_category":"FOREIGN"}'
 # -> {"port_call_id": "PC-2026-TPP-0002", ...}  (nomor urut mengikuti isi DB)
 # 3. Lihat checklist tenggat (RKSP deadline = ETA-24 jam, dst.)
-curl -s localhost:8000/api/port-calls/PC-2026-TPP-0002/clearance-checklist
+curl -s -b cookies-ops.txt localhost:8000/api/port-calls/PC-2026-TPP-0002/clearance-checklist
 # 4. Coba terbitkan SPB sekarang -> DITOLAK 400 + daftar blocker
-curl -s -X POST localhost:8000/api/port-calls/PC-2026-TPP-0002/spb -H 'Content-Type: application/json' \
+curl -s -b cookies-ops.txt -X POST localhost:8000/api/port-calls/PC-2026-TPP-0002/spb -H 'Content-Type: application/json' \
   -d '{"doc_number":"SPB.IDTPP.2026.001","issued_at":"2026-11-10 10:00:00"}'
 # 5. Setujui semua clearance template (kecuali SPB) via GET detail -> ambil id
 #    clearance, lalu POST /api/clearances/<id>/update {"doc_number":"...","status":"APPROVED"}
 #    (di UI: tab Dokumen & CIGP -> Edit per baris)
 # 6. Terbitkan SPB lagi -> 200, spb_expiry_at = issued_at + 24 jam (PM 28/2022 Ps 9)
 # 7. Catat milestone + hitung laytime
-curl -s -X POST localhost:8000/api/port-calls/PC-2026-TPP-0002/milestone -H 'Content-Type: application/json' \
+curl -s -b cookies-ops.txt -X POST localhost:8000/api/port-calls/PC-2026-TPP-0002/milestone -H 'Content-Type: application/json' \
   -d '{"milestone_code":"EOSP","event_time":"2026-11-10 07:30","remarks":"Tiba di ambang luar"}'
-curl -s -X POST localhost:8000/api/port-calls/PC-2026-TPP-0002/laytime/calculate -H 'Content-Type: application/json' \
+curl -s -b cookies-ops.txt -X POST localhost:8000/api/port-calls/PC-2026-TPP-0002/laytime/calculate -H 'Content-Type: application/json' \
   -d '{"nor_tendered_time":"2026-11-10 08:00","commenced_time":"2026-11-10 14:00","completed_time":"2026-11-12 14:00"}'
 # 8. Tambah item PDA/FDA, catat keberangkatan, lalu tutup ops + finance
 #    (close-ops DIGATE: ditolak bila SPB belum terbit/kedaluwarsa atau kapal
-#    belum DEPARTED — catat SAILED dulu, dalam masa berlaku SPB 24 jam)
-curl -s -X POST localhost:8000/api/port-calls/PC-2026-TPP-0002/milestone -H 'Content-Type: application/json' \
+#    belum DEPARTED — catat SAILED dulu, dalam masa berlaku SPB 24 jam;
+#    close-ops hanya role OPS, close-finance hanya role FINANCE)
+curl -s -b cookies-ops.txt -X POST localhost:8000/api/port-calls/PC-2026-TPP-0002/milestone -H 'Content-Type: application/json' \
   -d '{"milestone_code":"SAILED","event_time":"2026-11-10 18:00","remarks":"Berangkat setelah SPB terbit"}'
-curl -s -X POST localhost:8000/api/port-calls/PC-2026-TPP-0002/disbursements -H 'Content-Type: application/json' \
+curl -s -b cookies-ops.txt -X POST localhost:8000/api/port-calls/PC-2026-TPP-0002/disbursements -H 'Content-Type: application/json' \
   -d '{"category":"HUSBANDRY","item_name":"Bunkering 100 MT","pda_estimate":50000000,"fda_actual":0}'
-curl -s -X POST localhost:8000/api/port-calls/PC-2026-TPP-0002/close-ops -H 'Content-Type: application/json' -d '{"user":"Capt. Hadi"}'
-curl -s -X POST localhost:8000/api/port-calls/PC-2026-TPP-0002/close-finance -H 'Content-Type: application/json' -d '{"user":"Finance Mgr"}'
-# 9. Periksa jejak audit
-curl -s localhost:8000/api/port-calls/PC-2026-TPP-0002/audit-logs
+curl -s -b cookies-ops.txt -X POST localhost:8000/api/port-calls/PC-2026-TPP-0002/close-ops -H 'Content-Type: application/json' -d '{}'
+curl -s -c cookies-fin.txt -X POST localhost:8000/api/login -H 'Content-Type: application/json' \
+  -d '{"username":"fin_jakarta","password":"<password-fin>"}'
+curl -s -b cookies-fin.txt -X POST localhost:8000/api/port-calls/PC-2026-TPP-0002/close-finance -H 'Content-Type: application/json' -d '{}'
+# 9. Periksa jejak audit (user_id tercatat dari session, bukan dari body)
+curl -s -b cookies-ops.txt localhost:8000/api/port-calls/PC-2026-TPP-0002/audit-logs
 ```
 
 Di UI (`http://localhost:8000`): tab **Dokumen & CIGP** menampilkan panel
@@ -76,7 +95,10 @@ diterbitkan); tombol **+ Tambah Item PDA/FDA** ada di tab Finance; tombol
 
 | Metode & path | Fungsi |
 |---|---|
-| `GET /` | UI HTML |
+| `GET /` | UI HTML — bila belum login, menampilkan halaman login |
+| `POST /api/login` | Login (username + password) — set cookie session HttpOnly; 5x gagal/15 menit -> 429 |
+| `POST /api/logout` | Logout (hapus cookie session) |
+| `GET /api/me` | User + role dari session saat ini |
 | `GET /api/port-calls` | Daftar port call |
 | `GET /api/port-calls/<id>` | Detail (clearances, milestones, SOF, disbursements, disputes) |
 | `POST /api/port-calls` | Buat port call + template clearance 12 item (ASING: PKKA, DOMESTIK: PKK) |
@@ -92,8 +114,8 @@ diterbitkan); tombol **+ Tambah Item PDA/FDA** ada di tab Finance; tombol
 | `POST /api/port-calls/<id>/disbursements` | Tambah item PDA/FDA |
 | `POST /api/disbursements` | Alias tambah item PDA/FDA (pakai `port_call_id` di body) |
 | `POST /api/port-calls/<id>/dispute` | Buka tiket sengketa FDA |
-| `POST /api/port-calls/<id>/close-ops` | Otorisasi 1 (operasional) — **digate**: ditolak 400 bila SPB belum terbit, SPB kedaluwarsa, atau kapal belum DEPARTED; ditolak bila sudah ditutup |
-| `POST /api/port-calls/<id>/close-finance` | Otorisasi 2 (keuangan; menolak bila ops belum tutup) |
+| `POST /api/port-calls/<id>/close-ops` | Otorisasi 1 (operasional) — hanya role OPS/ADMIN (403 bila bukan); **digate**: ditolak 400 bila SPB belum terbit, SPB kedaluwarsa, atau kapal belum DEPARTED; ditolak bila sudah ditutup |
+| `POST /api/port-calls/<id>/close-finance` | Otorisasi 2 (keuangan; menolak bila ops belum tutup) — hanya role FINANCE/ADMIN (403 bila bukan) |
 | `GET /api/master/ports` | Master pelabuhan + terminal + kapal |
 | `POST /api/master/terminals` | Tambah terminal |
 | `POST /api/master/vessels` | Tambah kapal master (IMO unik) |
@@ -129,9 +151,10 @@ diterbitkan); tombol **+ Tambah Item PDA/FDA** ada di tab Finance; tombol
   enum status §4.1/§4.2 diselaraskan dengan kode (`PRE_ARRIVAL…CLOSED`,
   `PENDING…EXPIRED`); ditambahkan gate SPB, template clearance 12 item,
   endpoint baru, dan **§9 Status Implementasi** — tabel sumber kebenaran vs
-  kode. Fitur yang belum ada (RBAC, dashboard, tab timeline, auto-save SOF
+  kode. Fitur yang belum ada (dashboard, tab timeline, auto-save SOF
   offline, notifikasi email/Telegram, HTTPS/TLS) ditandai **[TARGET]**,
-  bukan diklaim sudah ada.
+  bukan diklaim sudah ada. Autentikasi dasar sudah terimplementasi
+  (1 Nov 2026, ADR-0011).
 - **Referensi hukum** (`docs/referensi-hukum.md`): §2 PM 65/2019 diberi label
   **digantikan PM 59/2021** (kutipan verbatim dipertahankan sebagai arsip)
   + §2A ringkasan PM 59/2021; ditambah §3A PM 8/2022 (Inaportnet, 5 layanan).
@@ -186,9 +209,11 @@ python3 scripts/migrate_to_turso.py        # batal bila Turso sudah berisi data
 python3 scripts/migrate_to_turso.py --force  # timpa isi Turso
 python3 scripts/migrate_to_turso.py --seed   # isi Turso dengan data contoh saja
 
-# 3. Vercel: isi TURSO_DATABASE_URL + TURSO_AUTH_TOKEN di
-#    Settings -> Environment Variables, lalu deploy ulang.
-#    Tanpa kedua variabel itu, aplikasi otomatis memakai SQLite lokal.
+# 3. Vercel: isi TURSO_DATABASE_URL + TURSO_AUTH_TOKEN + SESSION_SECRET di
+#    Settings -> Environment Variables (Production), lalu deploy ulang.
+#    Tanpa TURSO_*, aplikasi otomatis memakai SQLite lokal.
+#    Tanpa SESSION_SECRET, aplikasi menjawab 500 (login tidak bisa jalan).
+#    SESSION_SECRET: generate sekali — python3 -c "import os;print(os.urandom(32).hex())"
 ```
 
 Detail: `docs/adr/0009-persistensi-turso-libsql.md`. Tier gratis Turso
@@ -200,16 +225,56 @@ transaksi, dan alur gate end-to-end — semua lulus.
 **Kinerja (ADR-0010):** setelah env Turso diisi, request pertama di Vercel
 pernah mencapai ~39 detik karena cold start menjalankan init+seed penuh dan
 tiap request membuka koneksi remote baru. Sejak optimasi 1 Nov 2026: cold
-start hanya 2 query kesiapan bila DB sudah siap, dan koneksi remote dipakai
-ulang per thread — terukur: request pertama 2,53 dtk, request hangat
+start hanya 1 query kesiapan bila DB sudah siap, dan koneksi remote dipakai
+ulang per thread — terukur: request pertama 2,53 dtk (3 statement), request hangat
 ~0,44 dtk. Sisa latensi adalah round-trip jaringan ke Turso per query.
+
+## Autentikasi (ADR-0011, 1 Nov 2026)
+
+Aplikasi kini terkunci login. User + role disimpan di Turso (tabel `users`),
+password di-hash PBKDF2, session berupa cookie ter-sign HMAC (verifikasi
+lokal, tanpa query DB per request).
+
+- **Buat user pertama** (lokal, sebelum deploy — atau dengan env Turso
+  terisi untuk membuat user langsung di Turso):
+  ```bash
+  python3 scripts/create_user.py ops_jakarta --full-name "Ops Jakarta" --role OPS
+  python3 scripts/create_user.py fin_jakarta --full-name "Finance Jakarta" --role FINANCE
+  # --update untuk mereset password/nama/role user yang sudah ada
+  ```
+  Tidak ada pendaftaran publik.
+- **User default (DB baru):** saat database pertama kali dibuat, otomatis
+  tersedia `ops_jakarta` (OPS) / password `OpsJakarta2026` dan `fin_jakarta`
+  (FINANCE) / password `FinJakarta2026`. **Segera ganti setelah login
+  pertama** — password ini tertulis di kode dan README, jadi siapa pun yang
+  membaca repo mengetahuinya:
+  ```bash
+  python3 scripts/create_user.py ops_jakarta --update
+  python3 scripts/create_user.py fin_jakarta --update
+  ```
+  Untuk memakai password pilihanmu sejak awal, isi env `SEED_OPS_PASSWORD`
+  / `SEED_FIN_PASSWORD` sebelum DB pertama kali dibuat. DB yang sudah ada
+  tidak ikut di-seed ulang — tambah user di sana lewat script di atas.
+- **SESSION_SECRET wajib diisi** sebelum server jalan (lokal maupun Vercel):
+  ```bash
+  export SESSION_SECRET=$(python3 -c "import os;print(os.urandom(32).hex())")
+  ```
+  Di Vercel: Settings → Environment Variables → `SESSION_SECRET` (Production)
+  lalu redeploy. Tanpa itu server menolak jalan (lokal) / menjawab 500
+  (Vercel). Rotate secret = semua session langsung batal.
+- **Role:** `OPS` boleh Otorisasi 1 (close-ops), `FINANCE` boleh Otorisasi 2
+  (close-finance), `ADMIN` boleh keduanya. Route lain boleh semua role yang
+  login. Audit mencatat username dari session — nilai `user` dari client
+  diabaikan.
+- Login dibatasi 5 percobaan gagal per username per 15 menit (429 sesudahnya).
 
 ## Keamanan & batasan (jujur)
 
-- **Tidak ada autentikasi / RBAC di versi ini.** Siapa pun yang bisa
-  mengakses server bisa mengubah data; kolom `user` di audit diambil dari
-  payload apa adanya. Jangan expose server ini ke internet. Rencana:
-  autentikasi + peran (ops/finance/read-only) dan pencatatan user terverifikasi.
+- **Autentikasi sudah ada (ADR-0011), tapi server tetap HTTP polos.**
+  Jangan expose server ini ke internet tanpa TLS di depannya. Di Vercel,
+  TLS ditangani platform; lokal, batasi ke jaringan internal.
+- Pencabutan user/role baru berlaku setelah cookie kedaluwarsa (maks 12 jam),
+  kecuali `SESSION_SECRET` di-rotate.
 - **Bukan portal resmi** (lihat batasan di atas); tidak ada integrasi otomatis
   ke Inaportnet/INSW/CEISA — data dipindahkan manusia (input ganda terkendali)
   sampai kanal resmi tersedia (ADR-0004).

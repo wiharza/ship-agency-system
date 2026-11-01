@@ -12,6 +12,7 @@ import json
 from datetime import datetime, timedelta
 import urllib.request
 import urllib.error
+import http.cookiejar
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -22,7 +23,10 @@ TEST_PORT = 8999
 
 
 def test_integration():
-    from engine.db import get_db, init_db, seed_sample_data
+    # Autentikasi aktif di tes ini (ADR-0011): secret khusus tes, bukan
+    # secret produksi. Semua request memakai cookie session dari login.
+    os.environ["SESSION_SECRET"] = "test-secret-lokal-jangan-dipakai-di-produksi"
+    from engine.db import get_db, init_db, seed_sample_data, create_user
     # Siapkan skema + data contoh dulu: sejak agency.db tidak lagi di-commit,
     # clone baru (dan CI) tidak punya DB — init_db() membuatnya dari kode.
     init_db()
@@ -31,6 +35,16 @@ def test_integration():
     conn = get_db()
     with conn:
         conn.execute("UPDATE port_calls SET ops_closed_by = NULL, ops_closed_at = NULL, finance_closed_by = NULL, finance_closed_at = NULL, spb_issued_at = NULL, spb_expiry_at = NULL, atd = NULL, status = 'PRE_ARRIVAL' WHERE id = 'PC-2026-JKT-0001'")
+    conn.close()
+    # User tes (idempotent): hapus dulu lalu buat lagi dengan password tetap.
+    conn = get_db()
+    with conn:
+        conn.execute("DELETE FROM users WHERE username IN ('ops_tes', 'fin_tes', 'adm_tes')")
+    conn.close()
+    conn = get_db()
+    create_user(conn, "ops_tes", "ops-pass-123", "Ops Tes", "OPS")
+    create_user(conn, "fin_tes", "fin-pass-123", "Fin Tes", "FINANCE")
+    create_user(conn, "adm_tes", "adm-pass-123", "Admin Tes", "ADMIN")
     conn.close()
 
     socketserver.TCPServer.allow_reuse_address = True  # sebelum bind (TIME_WAIT)
@@ -41,13 +55,61 @@ def test_integration():
 
     base_url = f"http://127.0.0.1:{TEST_PORT}"
 
+    def _login_opener(username, password):
+        """Opener urllib dengan cookie jar sendiri; login sekali, lalu
+        semua open() berikutnya otomatis membawa cookie session user itu."""
+        jar = http.cookiejar.CookieJar()
+        op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+        req = urllib.request.Request(
+            f"{base_url}/api/login",
+            data=json.dumps({"username": username, "password": password}).encode("utf-8"),
+            headers={"Content-Type": "application/json"})
+        with op.open(req) as res:
+            assert res.status == 200, f"Login {username} gagal"
+            set_cookie = res.headers.get("Set-Cookie") or ""
+            assert "HttpOnly" in set_cookie, "Cookie session harus HttpOnly"
+            assert "ship_agency_session=" in set_cookie
+        return op
+
     try:
-        # 1. Test GET / (UI)
+        # 1. Test GET / tanpa login -> halaman login (bukan UI aplikasi)
+        with urllib.request.urlopen(f"{base_url}/") as res:
+            assert res.status == 200
+            html = res.read().decode("utf-8")
+            assert 'id="login-form"' in html, "GET / tanpa session harus menampilkan halaman login"
+        print("[TEST 1/22] GET / tanpa login menampilkan halaman login.")
+
+        # 17. Test Auth: API tanpa cookie -> 401; login salah -> 401;
+        #     login benar -> 200 + cookie HttpOnly.
+        try:
+            urllib.request.urlopen(f"{base_url}/api/port-calls")
+            assert False, "API tanpa cookie harus 401"
+        except urllib.error.HTTPError as e:
+            assert e.code == 401
+        req_bad = urllib.request.Request(
+            f"{base_url}/api/login",
+            data=json.dumps({"username": "ops_tes", "password": "salah"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(req_bad)
+            assert False, "Login password salah harus 401"
+        except urllib.error.HTTPError as e:
+            assert e.code == 401
+        ops_opener = _login_opener("ops_tes", "ops-pass-123")
+        fin_opener = _login_opener("fin_tes", "fin-pass-123")
+        urllib.request.install_opener(ops_opener)  # urlopen berikut = cookie OPS
+        print("[TEST 17/22] Auth: 401 tanpa cookie, 401 password salah, login OK + cookie HttpOnly.")
+
+        # 1b. Test GET / dengan session -> UI aplikasi (bukan halaman login)
         with urllib.request.urlopen(f"{base_url}/") as res:
             assert res.status == 200
             html = res.read().decode("utf-8")
             assert "SISTEM KEAGENAN KAPAL NASIONAL" in html
-        print("[TEST 1/8] GET / UI Berhasil diakses.")
+            assert 'id="login-form"' not in html
+        with urllib.request.urlopen(f"{base_url}/api/me") as res:
+            me = json.loads(res.read().decode("utf-8"))
+            assert me["username"] == "ops_tes" and me["role"] == "OPS"
+        print("[TEST 1b/22] GET / dengan session menampilkan UI + /api/me benar.")
 
         # 2. Test GET /api/port-calls
         with urllib.request.urlopen(f"{base_url}/api/port-calls") as res:
@@ -107,14 +169,15 @@ def test_integration():
         print(f"[TEST 6/8] POST Laytime Calculate Valid ({lt_res['result']['claim_type']} ${lt_res['result']['amount_usd']}).")
 
         # 7. Test Dual Sign-off Validation
-        # Coba sign finance dulu -> Harusnya gagal (HTTP 400) karena ops belum sign-off
+        # Coba sign finance dulu -> Harusnya gagal (HTTP 400) karena ops belum sign-off.
+        # Pakai cookie FINANCE supaya lolos gate role; 400-nya dari urutan otorisasi.
         req_fin = urllib.request.Request(
             f"{base_url}/api/port-calls/{pc_id}/close-finance",
             data=json.dumps({"user": "Finance Mgr"}).encode("utf-8"),
             headers={"Content-Type": "application/json"}
         )
         try:
-            urllib.request.urlopen(req_fin)
+            fin_opener.open(req_fin)
             assert False, "Finance closure harus ditolak jika Ops belum sign-off"
         except urllib.error.HTTPError as e:
             assert e.code == 400
@@ -153,8 +216,8 @@ def test_integration():
         with urllib.request.urlopen(req_ops) as res:
             assert res.status == 200
 
-        # Lalu sign-off Finance
-        with urllib.request.urlopen(req_fin) as res:
+        # Lalu sign-off Finance (cookie FINANCE)
+        with fin_opener.open(req_fin) as res:
             assert res.status == 200
         print("[TEST 7/8b] Dual Sign-off Berhasil (Ops -> Finance -> Status CLOSED).")
 
@@ -429,6 +492,69 @@ def test_integration():
                     "kedaluwarsa")
         _expect_400(f"/api/port-calls/{pc2}/close-ops", {"user": "Capt. Hadi"}, "kedaluwarsa")
         print("[TEST 16e/16] SPB kedaluwarsa: SAILED + close-ops ditolak 400.")
+
+        # 18. Test Gate Role: close-ops oleh FINANCE -> 403; close-finance
+        # oleh OPS -> 403. (pc2 dipakai untuk close-ops: gate role dicek
+        # sebelum gate SPB, jadi 403 walau SPB-nya kedaluwarsa. new_pc sudah
+        # CLEARANCE_CLOSED — close-finance oleh OPS ditolak role-nya.)
+        def _expect_status(opener, path, payload, want, frag):
+            try:
+                opener.open(_post(path, payload))
+                assert False, f"{path} harus ditolak {want} ({frag})"
+            except urllib.error.HTTPError as e:
+                assert e.code == want, f"{path} harus {want}, dapat {e.code}"
+                body = e.read().decode("utf-8")
+                assert frag in body, f"Respons {want} harus menyebut '{frag}', dapat {body}"
+        _expect_status(fin_opener, f"/api/port-calls/{pc2}/close-ops",
+                       {"user": "Finance Mgr"}, 403, "OPS atau ADMIN")
+        _expect_status(ops_opener, f"/api/port-calls/{new_pc}/close-finance",
+                       {"user": "Capt. Hadi"}, 403, "FINANCE atau ADMIN")
+        print("[TEST 18/22] Gate Role: close-ops FINANCE -> 403, close-finance OPS -> 403.")
+
+        # 19. Test Audit mengambil user dari SESSION, bukan payload.
+        # close-ops 16c dikirim dengan payload user "Capt. Hadi" tapi cookie
+        # OPS (ops_tes) — audit harus mencatat ops_tes, bukan Capt. Hadi.
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{new_pc}/audit-logs") as res:
+            logs2 = json.loads(res.read().decode("utf-8"))["audit_logs"]
+        close_ops_entries = [l for l in logs2 if l["action"] == "CLOSE_OPS"]
+        assert close_ops_entries, "Audit harus berisi CLOSE_OPS"
+        assert all(l["user_id"] == "ops_tes" for l in close_ops_entries), \
+            f"CLOSE_OPS harus dicatat atas ops_tes, dapat {[l['user_id'] for l in close_ops_entries]}"
+        assert not any(l["user_id"] == "Capt. Hadi" for l in logs2), \
+            "Tidak boleh ada audit atas nama dari payload client"
+        print("[TEST 19/22] Audit user_id dari session (ops_tes), bukan payload client.")
+
+        # 20. Test Rate Limit Login: 5x gagal -> percobaan ke-6 ditolak 429.
+        req_brute = urllib.request.Request(
+            f"{base_url}/api/login",
+            data=json.dumps({"username": "brute_tes", "password": "salah"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"})
+        for i in range(5):
+            try:
+                urllib.request.urlopen(req_brute)
+                assert False, "Login brute_tes harus 401"
+            except urllib.error.HTTPError as e:
+                assert e.code == 401, f"Percobaan {i+1} harus 401, dapat {e.code}"
+        try:
+            urllib.request.urlopen(req_brute)
+            assert False, "Percobaan login ke-6 harus 429"
+        except urllib.error.HTTPError as e:
+            assert e.code == 429, f"Percobaan ke-6 harus 429, dapat {e.code}"
+        print("[TEST 20/22] Rate Limit Login: 5x 401 lalu 429 pada percobaan ke-6.")
+
+        # 21. Test Logout: setelah logout, API menolak 401 (cookie dihapus).
+        req_logout = urllib.request.Request(
+            f"{base_url}/api/logout",
+            data=b"{}",
+            headers={"Content-Type": "application/json"})
+        with ops_opener.open(req_logout) as res:
+            assert res.status == 200
+        try:
+            urllib.request.urlopen(f"{base_url}/api/port-calls")
+            assert False, "API setelah logout harus 401"
+        except urllib.error.HTTPError as e:
+            assert e.code == 401
+        print("[TEST 21/22] Logout: cookie dihapus, API menolak 401 sesudahnya.")
 
         print("\nSEMUA INTEGRATION TEST LULUS (100% VERIFIED)!")
 

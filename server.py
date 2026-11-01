@@ -15,7 +15,12 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from email.message import Message as WSGIHeaders
 
-from engine.db import get_db, init_db, seed_sample_data, calculate_file_sha256, log_audit, TABLES, drop_remote_connection
+from engine.db import get_db, init_db, seed_sample_data, calculate_file_sha256, log_audit, drop_remote_connection
+from engine.auth import (
+    SESSION_COOKIE_NAME, SESSION_TTL_SECONDS,
+    get_session_secret, make_session_cookie, verify_session_cookie,
+    verify_password, is_login_blocked, record_login_failure, clear_login_failures,
+)
 from engine.laytime import LaytimeCalculator, parse_iso
 
 PORT = 8000
@@ -213,8 +218,125 @@ def _insert_disbursement(conn, pc_id, payload):
 
 
 
+LOGIN_HTML = """<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Masuk — Sistem Keagenan Kapal Nasional</title>
+  <style>
+    :root { --bg: #0f172a; --card-bg: #1e293b; --border: #334155;
+            --primary: #2563eb; --text: #f8fafc; --text-muted: #94a3b8;
+            --red: #ef4444; --cyan: #06b6d4; }
+    * { box-sizing: border-box; margin: 0; padding: 0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    body { background: var(--bg); color: var(--text); min-height: 100vh;
+           display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .card { background: var(--card-bg); border: 1px solid var(--border);
+            border-radius: 8px; padding: 32px; width: 100%; max-width: 360px; }
+    h1 { font-size: 18px; color: var(--cyan); margin-bottom: 4px; }
+    p.sub { font-size: 12px; color: var(--text-muted); margin-bottom: 20px; }
+    label { display: block; font-size: 12px; color: var(--text-muted); margin: 12px 0 4px; }
+    input { width: 100%; padding: 10px; background: #0f172a; border: 1px solid var(--border);
+            border-radius: 4px; color: #fff; font-size: 14px; }
+    input:focus { outline: none; border-color: var(--cyan); }
+    button { width: 100%; margin-top: 20px; padding: 10px; background: var(--primary);
+             color: #fff; border: none; border-radius: 6px; font-size: 14px;
+             font-weight: 600; cursor: pointer; }
+    button:hover { background: #1d4ed8; }
+    .err { display: none; margin-top: 12px; padding: 10px; border-radius: 6px;
+           background: rgba(239,68,68,.15); border: 1px solid var(--red);
+           color: #f87171; font-size: 13px; }
+    .note { margin-top: 16px; font-size: 11px; color: var(--text-muted); text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>&#9875; SISTEM KEAGENAN KAPAL NASIONAL</h1>
+    <p class="sub">Masuk untuk mengakses tracker clearance &amp; disbursement.</p>
+    <form id="login-form">
+      <label for="username">Username</label>
+      <input id="username" name="username" autocomplete="username" autofocus>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password">
+      <div class="err" id="err"></div>
+      <button type="submit">Masuk</button>
+    </form>
+    <p class="note">Tidak ada pendaftaran publik — akun dibuat admin lewat scripts/create_user.py.</p>
+  </div>
+  <script>
+    document.getElementById('login-form').addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const err = document.getElementById('err');
+      err.style.display = 'none';
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: document.getElementById('username').value,
+          password: document.getElementById('password').value
+        })
+      });
+      if (res.ok) { location.href = '/'; return; }
+      const data = await res.json().catch(() => ({}));
+      err.textContent = data.error || 'Login gagal';
+      err.style.display = 'block';
+    });
+  </script>
+</body>
+</html>"""
+
+
 class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
-    def send_json(self, data, status=200):
+    # -- Autentikasi (ADR-0011) -------------------------------------------
+    # Session = cookie ter-sign HMAC (stateless, diverifikasi lokal tanpa
+    # query DB). Semua route /api/* menolak tanpa session valid; halaman
+    # utama "/" menampilkan halaman login bila belum login.
+
+    def _session_user(self):
+        """(username, role) dari cookie ter-sign, atau None bila tidak ada /
+        tidak valid / kedaluwarsa. Melempar RuntimeError bila SESSION_SECRET
+        belum diisi (ditangani pemanggil menjadi 500 dengan pesan jelas)."""
+        return verify_session_cookie(self.headers.get("Cookie"))
+
+    def _require_auth(self, roles=None):
+        """Kembalikan (username, role) bila session valid (dan role cukup).
+        Bila tidak, kirim 401/403/500 JSON dan kembalikan None — pemanggil
+        wajib `return` bila hasilnya None."""
+        try:
+            session = self._session_user()
+        except RuntimeError as exc:
+            self.send_json({"error": str(exc)}, status=500)
+            return None
+        if session is None:
+            self.send_json({"error": "Belum login — silakan login dulu"}, status=401)
+            return None
+        if roles is not None and session[1] not in roles:
+            self.send_json(
+                {"error": f"Role {session[1]} tidak boleh melakukan aksi ini "
+                          f"(butuh {', '.join(roles)})"}, status=403)
+            return None
+        return session
+
+    def _session_cookie_header(self, value, max_age):
+        """Bangun header Set-Cookie. Secure hanya bila request datang lewat
+        HTTPS (Vercel meneruskan X-Forwarded-Proto: https); lokal (HTTP)
+        tanpa Secure supaya login tetap jalan di http://localhost."""
+        parts = [f"{SESSION_COOKIE_NAME}={value}", "HttpOnly", "Path=/",
+                 "SameSite=Lax", f"Max-Age={max_age}"]
+        if (self.headers.get("X-Forwarded-Proto") or "").lower() == "https":
+            parts.append("Secure")
+        return "; ".join(parts)
+
+    def _send_login_page(self):
+        content = LOGIN_HTML.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
+
+    def send_json(self, data, status=200, extra_headers=None):
         response_bytes = json.dumps(data, indent=2, default=str).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -222,6 +344,8 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        for key, value in (extra_headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(response_bytes)
 
@@ -237,8 +361,34 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
         path = parsed.path
 
         if path == "/":
-            self.serve_ui()
+            # Halaman utama: tampilkan login bila belum login (ADR-0011).
+            try:
+                session = self._session_user()
+            except RuntimeError as exc:
+                self.send_json({"error": str(exc)}, status=500)
+                return
+            if session is None:
+                self._send_login_page()
+            else:
+                self.serve_ui()
             return
+
+        if path == "/api/me":
+            session = self._require_auth()
+            if session is None:
+                return
+            username, role = session
+            conn = get_db()
+            row = conn.execute(
+                "SELECT full_name FROM users WHERE username = ?", (username,)).fetchone()
+            conn.close()
+            self.send_json({"username": username, "role": role,
+                            "full_name": row["full_name"] if row else username})
+            return
+
+        if path.startswith("/api/"):
+            if self._require_auth() is None:
+                return
 
         if path == "/api/port-calls":
             conn = get_db()
@@ -414,6 +564,57 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
         except Exception:
             payload = {}
 
+        # -- Login (publik, rate-limited) ---------------------------------
+        if path == "/api/login":
+            username = (payload.get("username") or "").strip()
+            password = payload.get("password") or ""
+            if not username or not password:
+                self.send_json({"error": "Username dan password wajib diisi"}, status=400)
+                return
+            if is_login_blocked(username):
+                self.send_json(
+                    {"error": "Terlalu banyak percobaan login — coba lagi 15 menit lagi"},
+                    status=429)
+                return
+            conn = get_db()
+            row = conn.execute(
+                "SELECT username, password_hash, full_name, role, active "
+                "FROM users WHERE username = ?", (username,)).fetchone()
+            conn.close()
+            # Pesan gagal disamakan untuk semua kasus (user tidak ada /
+            # nonaktif / password salah) supaya tidak membocorkan user mana
+            # yang terdaftar.
+            if row is None or not row["active"] or not verify_password(password, row["password_hash"]):
+                record_login_failure(username)
+                self.send_json({"error": "Username atau password salah"}, status=401)
+                return
+            clear_login_failures(username)
+            try:
+                cookie_value = make_session_cookie(row["username"], row["role"])
+            except RuntimeError as exc:
+                self.send_json({"error": str(exc)}, status=500)
+                return
+            self.send_json(
+                {"status": "success", "username": row["username"],
+                 "full_name": row["full_name"], "role": row["role"]},
+                extra_headers={"Set-Cookie": self._session_cookie_header(
+                    cookie_value, SESSION_TTL_SECONDS)})
+            return
+
+        # -- Logout (publik; cukup hapus cookie) ---------------------------
+        if path == "/api/logout":
+            self.send_json({"status": "success", "message": "Berhasil keluar"},
+                           extra_headers={"Set-Cookie": self._session_cookie_header("", 0)})
+            return
+
+        # -- Semua POST lain butuh session valid (ADR-0011) ----------------
+        # Actor untuk audit/close diambil dari SESSION, bukan dari payload
+        # client — menutup lubang pemalsuan user_id di audit_logs.
+        session = self._require_auth()
+        if session is None:
+            return
+        actor, actor_role = session
+
         if path == "/api/master/vessels":
             imo = (payload.get("imo") or "").strip()
             name = (payload.get("name") or "").strip()
@@ -464,7 +665,7 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             with conn:
                 dis_id, err = _insert_disbursement(conn, pc_id, payload)
                 if not err:
-                    log_audit(conn, pc_id, payload.get("user", "ops_agent"), "DISBURSEMENT_ADD",
+                    log_audit(conn, pc_id, actor, "DISBURSEMENT_ADD",
                               None, f"{payload.get('category')} — {payload.get('item_name')}")
             conn.close()
             if err:
@@ -630,7 +831,7 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     SET doc_number = ?, status = ?, remarks = ?, approval_time = ?, file_sha256 = ?
                     WHERE id = ?
                     """, (new_doc_number, new_status, new_remarks, approval_time, file_sha256, clearance_id))
-                    log_audit(conn, cl["port_call_id"], payload.get("user", "ops_agent"), "CLEARANCE_UPDATE",
+                    log_audit(conn, cl["port_call_id"], actor, "CLEARANCE_UPDATE",
                               f"{cl['doc_type']} [{cl['status']}] {cl['doc_number'] or ''}",
                               f"{cl['doc_type']} [{new_status}] {new_doc_number or ''}")
                 conn.close()
@@ -645,7 +846,7 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 pc_id = parts[2]
                 code = payload.get("milestone_code")
                 event_time = payload.get("event_time", datetime.now().strftime("%Y-%m-%d %H:%M"))
-                recorded_by = payload.get("recorded_by", "agent_ops")
+                recorded_by = actor  # dari session, bukan payload
                 remarks = payload.get("remarks", "")
 
                 conn = get_db()
@@ -765,7 +966,7 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     SET doc_number = ?, approval_time = ?, expiry_time = ?, status = 'APPROVED', remarks = 'Berlaku 24 jam'
                     WHERE port_call_id = ? AND doc_type LIKE '%SPB%'
                     """, (doc_number, issue_time_str, expiry_time_str, pc_id))
-                    log_audit(conn, pc_id, payload.get("user", "ops_agent"), "SPB_ISSUED",
+                    log_audit(conn, pc_id, actor, "SPB_ISSUED",
                               None, f"SPB {doc_number} terbit {issue_time_str}, kedaluwarsa {expiry_time_str}")
                 conn.close()
                 self.send_json({
@@ -798,8 +999,8 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     conn.execute("""
                     INSERT INTO clearances (port_call_id, agency, doc_type, doc_number, submission_time, approval_time, status, file_name, file_sha256, remarks, submitted_by)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (pc_id, agency, doc_type, doc_number, now_str, approval_time, status, f"{doc_slug}.pdf", file_sha256, remarks, "ops_agent"))
-                    log_audit(conn, pc_id, payload.get("user", "ops_agent"), "CLEARANCE_ADD",
+                    """, (pc_id, agency, doc_type, doc_number, now_str, approval_time, status, f"{doc_slug}.pdf", file_sha256, remarks, actor))
+                    log_audit(conn, pc_id, actor, "CLEARANCE_ADD",
                               None, f"{agency} — {doc_type} [{status}] {doc_number}")
                 conn.close()
                 self.send_json({"status": "success", "file_sha256": file_sha256, "message": f"Dokumen {doc_type} berhasil dicatat"})
@@ -818,7 +1019,7 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 with conn:
                     dis_id, err = _insert_disbursement(conn, pc_id, payload)
                     if not err:
-                        log_audit(conn, pc_id, payload.get("user", "ops_agent"), "DISBURSEMENT_ADD",
+                        log_audit(conn, pc_id, actor, "DISBURSEMENT_ADD",
                                   None, f"{payload.get('category')} — {payload.get('item_name')}")
                 conn.close()
                 if err:
@@ -879,7 +1080,12 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             # sama seperti close-finance yang mengecek ops_closed_at dulu.
             if len(parts) == 4 and parts[3] == "close-ops":
                 pc_id = parts[2]
-                user_name = payload.get("user", "Staf Operasional")
+                # Gate role (ADR-0011): Otorisasi 1 hanya OPS/ADMIN. Dicek
+                # SEBELUM gate SPB/status supaya penolakan role jelas.
+                if actor_role not in ("OPS", "ADMIN"):
+                    self.send_json({"error": "Otorisasi 1 hanya boleh dilakukan role OPS atau ADMIN"}, status=403)
+                    return
+                user_name = actor  # dari session, bukan payload
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 conn = get_db()
                 c = conn.cursor()
@@ -919,7 +1125,11 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             # POST /api/port-calls/<id>/close-finance (Otorisasi 2)
             if len(parts) == 4 and parts[3] == "close-finance":
                 pc_id = parts[2]
-                user_name = payload.get("user", "Finance Manager")
+                # Gate role (ADR-0011): Otorisasi 2 hanya FINANCE/ADMIN.
+                if actor_role not in ("FINANCE", "ADMIN"):
+                    self.send_json({"error": "Otorisasi 2 hanya boleh dilakukan role FINANCE atau ADMIN"}, status=403)
+                    return
+                user_name = actor  # dari session, bukan payload
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 conn = get_db()
                 c = conn.cursor()
@@ -978,6 +1188,9 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
 
 
 def run_server(port=PORT):
+    # Gagal cepat bila SESSION_SECRET belum diisi (ADR-0011): lebih baik
+    # server tidak jalan sama sekali daripada jalan tanpa autentikasi.
+    get_session_secret()
     init_db()
     seed_sample_data()
     socketserver.TCPServer.allow_reuse_address = True  # harus sebelum bind, agar restart cepat tidak kena TIME_WAIT
@@ -1042,22 +1255,29 @@ def _prepare_database_once():
     seed_sample_data() penuh: 13 CREATE TABLE IF NOT EXISTS + belasan
     SELECT COUNT + INSERT — masing-masing satu round-trip ke Turso
     (~600 ms dari VM ini) sehingga cold start pertama mencapai ~39 dtk.
-    Sekarang cukup 2 query: daftar nama tabel dari sqlite_master, lalu
-    COUNT(*) port_calls. Bila semua tabel ada dan sudah ada port call,
-    tidak ada lagi yang dijalankan. Bila tabel belum lengkap -> init_db()
-    + seed. Bila tabel lengkap tapi kosong -> seed saja.
-    (sqlite_sequence dari AUTOINCREMENT ikut muncul di sqlite_master;
-    pemeriksaan memakai issubset sehingga tabel ekstra diabaikan.)"""
+    Sekarang cukup 1 query: dua COUNT dalam satu statement
+    (master_ports + port_calls). Bila keduanya > 0, tidak ada lagi yang
+    dijalankan. Bila salah satu 0 -> seed_sample_data() saja (mengisi tabel
+    yang kosong; idempoten). Bila tabelnya belum ada sama sekali, query
+    gagal dengan "no such table" -> init_db() + seed penuh.
+    (Satu statement, bukan dua: COUNT gabungan ini adalah ide dari
+    turso-speedup.patch — bedanya, patch itu hanya mengecek master_ports,
+    sehingga DB yang tabelnya tidak lengkap lolos tanpa diperbaiki.)"""
     conn = get_db()
     try:
-        names = {r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-        if not set(TABLES).issubset(names):
+        try:
+            row = conn.execute(
+                "SELECT (SELECT COUNT(*) FROM master_ports) AS n_ports, "
+                "(SELECT COUNT(*) FROM port_calls) AS n_pc").fetchone()
+        except Exception as exc:
+            if "no such table" not in str(exc):
+                raise
+            row = None  # DB baru, tabel belum ada -> init penuh di bawah
+        if row is None:
             init_db()
             seed_sample_data()
             return
-        n = conn.execute("SELECT COUNT(*) FROM port_calls").fetchone()[0]
-        if n == 0:
+        if row[0] == 0 or row[1] == 0:
             seed_sample_data()
     finally:
         conn.close()

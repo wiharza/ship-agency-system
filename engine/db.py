@@ -668,6 +668,26 @@ def seed_sample_data():
             (sample_id,),
         )
 
+    # User default (ADR-0011, Q42): dibuat saat DB pertama kali di-seed,
+    # supaya login langsung bisa dipakai tanpa script tambahan. Password
+    # diambil dari env SEED_OPS_PASSWORD / SEED_FIN_PASSWORD bila diisi;
+    # bila tidak, pakai password default yang TERDOKUMENTASI di README —
+    # WAJIB diganti setelah login pertama:
+    #   python3 scripts/create_user.py ops_jakarta --update
+    #   python3 scripts/create_user.py fin_jakarta --update
+    # Peringatan dicetak ke log saat user default dibuat, supaya tidak
+    # ada yang lupa menggantinya.
+    for _username, _full_name, _role, _env_key, _default_pw in (
+        ("ops_jakarta", "Ops Jakarta", "OPS", "SEED_OPS_PASSWORD", "OpsJakarta2026"),
+        ("fin_jakarta", "Finance Jakarta", "FINANCE", "SEED_FIN_PASSWORD", "FinJakarta2026"),
+    ):
+        _password = os.environ.get(_env_key, "").strip() or _default_pw
+        if create_user(conn, _username, _password, _full_name, _role):
+            if _password == _default_pw:
+                print(f"PERINGATAN: user default '{_username}' dibuat dengan "
+                      f"password default '{_default_pw}' — segera ganti: "
+                      f"python3 scripts/create_user.py {_username} --update")
+
     conn.close()
 
 

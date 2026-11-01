@@ -242,7 +242,19 @@ lokal, tanpa query DB per request).
   python3 scripts/create_user.py fin_jakarta --full-name "Finance Jakarta" --role FINANCE
   # --update untuk mereset password/nama/role user yang sudah ada
   ```
-  Tidak ada user bawaan dan tidak ada pendaftaran publik.
+  Tidak ada pendaftaran publik.
+- **User default (DB baru):** saat database pertama kali dibuat, otomatis
+  tersedia `ops_jakarta` (OPS) / password `OpsJakarta2026` dan `fin_jakarta`
+  (FINANCE) / password `FinJakarta2026`. **Segera ganti setelah login
+  pertama** — password ini tertulis di kode dan README, jadi siapa pun yang
+  membaca repo mengetahuinya:
+  ```bash
+  python3 scripts/create_user.py ops_jakarta --update
+  python3 scripts/create_user.py fin_jakarta --update
+  ```
+  Untuk memakai password pilihanmu sejak awal, isi env `SEED_OPS_PASSWORD`
+  / `SEED_FIN_PASSWORD` sebelum DB pertama kali dibuat. DB yang sudah ada
+  tidak ikut di-seed ulang — tambah user di sana lewat script di atas.
 - **SESSION_SECRET wajib diisi** sebelum server jalan (lokal maupun Vercel):
   ```bash
   export SESSION_SECRET=$(python3 -c "import os;print(os.urandom(32).hex())")

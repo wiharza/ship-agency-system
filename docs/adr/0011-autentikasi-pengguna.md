@@ -131,6 +131,20 @@ terdaftar. Login berhasil menghapus counter.
   deploy — tanpa itu aplikasi menjawab 500. Nilai: sekali generate
   `os.urandom(32).hex()`; jangan dipakai ulang antar environment.
 
+## Addendum (1 Nov 2026): user default di-seed (Q42)
+
+`seed_sample_data()` kini membuat dua user default saat DB pertama kali
+dibuat: `ops_jakarta` (OPS) dan `fin_jakarta` (FINANCE). Password dari env
+`SEED_OPS_PASSWORD` / `SEED_FIN_PASSWORD` bila diisi; bila tidak, password
+default yang terdokumentasi: `OpsJakarta2026` / `FinJakarta2026`.
+
+Ini sengaja dibuat nyaman, bukan aman: siapa pun yang membaca kode tahu
+password defaultnya. Maka aturannya: **wajib diganti setelah login
+pertama** (`scripts/create_user.py <user> --update`), dan seed mencetak
+peringatan keras ke log saat user default dibuat. DB yang sudah ada
+(seperti Turso `agency-yansen`) tidak ikut di-seed ulang — user default
+di sana dibuat sekali lewat `scripts/create_user.py` dengan env Turso.
+
 ## Verifikasi (1 Nov 2026)
 
 - `tests/test_api.py`: 21 tes lulus — termasuk Tes 1 (halaman login tanpa

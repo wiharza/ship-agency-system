@@ -91,6 +91,12 @@ checklist tenggat (badge merah/kuning/hijau + status bisa-tidaknya SPB
 diterbitkan); tombol **+ Tambah Item PDA/FDA** ada di tab Finance; tombol
 **+ Tambah Kapal Master** ada di modal Buat Port Call Baru.
 
+UI responsif untuk HP (ADR-0012): di layar ≤900px layout jadi 1 kolom
+(daftar di atas, detail di bawah) dan memilih Port Call otomatis menggulir
+ke detail; di ≤640px tombol setinggi 44px, tabel digeser horizontal di
+dalam kartu, dan modal bisa di-scroll sampai tombol Simpan. Terverifikasi
+render 390px tanpa overflow horizontal.
+
 ## Endpoint
 
 | Metode & path | Fungsi |

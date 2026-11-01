@@ -65,13 +65,64 @@
     input:focus, select:focus, textarea:focus { outline: none; border-color: var(--cyan); }
 
     .offline-bar { background: rgba(16, 185, 129, 0.15); border: 1px solid var(--green); border-radius: 6px; padding: 10px 14px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
+
+    /* -- Grid-grid kecil di dalam tab/modal: 2 kolom di desktop, 1 kolom di HP -- */
+    .app-title { font-size: 20px; font-weight: 800; color: var(--cyan); }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .grid-laytime { display: grid; grid-template-columns: 350px 1fr; gap: 20px; }
+    .grid-modal-form { display: grid; grid-template-columns: 1.5fr 1fr; gap: 12px; }
+    /* PENTING — cegah "grid blowout": item grid default min-width:auto
+       (= min-content isinya, mis. deretan tab ~600px) sehingga kolom 1fr
+       bisa mengembang melewati layar dan memaksa viewport melebar.
+       min-width:0 membiarkan item menyusut ke lebar kolom; konten yang
+       lebar (tab, tabel) lalu di-scroll di dalam kartunya sendiri. */
+    .grid > *, .grid-2 > *, .grid-laytime > *, .grid-modal-form > * { min-width: 0; }
+    .dual-auth { background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+    .dual-auth-actions { display: flex; gap: 8px; }
+
+    /* -- Modal: overlay bisa scroll, kartu dibatasi tinggi layar -- */
+    .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 9999; align-items: center; justify-content: center; overflow-y: auto; padding: 16px; }
+    .modal-card { width: 520px; max-width: 100%; max-height: calc(100vh - 32px); overflow-y: auto; margin: auto; }
+
+    /* =================================================================
+       RESPONSIF (mobile-first perbaikan, desktop tidak berubah)
+       - <=900px: layout utama jadi 1 kolom (daftar port call di atas,
+         detail di bawah); grid laytime menumpuk.
+       - <=640px (HP): padding rapat, judul mengecil, tombol setinggi
+         44px (target sentuh), input 16px (cegah zoom otomatis iOS),
+         tabel bisa di-scroll horizontal, modal & banner menumpuk.
+       ================================================================= */
+    @media (max-width: 900px) {
+      .grid { grid-template-columns: 1fr; gap: 16px; }
+      .grid-laytime { grid-template-columns: 1fr; }
+      header { flex-wrap: wrap; gap: 12px; }
+    }
+    @media (max-width: 640px) {
+      body { padding: 12px; }
+      .app-title { font-size: 17px; }
+      .card { padding: 14px; }
+      .grid-2, .grid-modal-form { grid-template-columns: 1fr; }
+      /* Tabel: jangan dipaksa muat — geser horizontal di dalam kartu */
+      table { display: block; overflow-x: auto; }
+      .btn, .tab-btn { min-height: 44px; }
+      .btn { padding: 10px 16px; }
+      input, select, textarea { font-size: 16px; }
+      .timer-box { flex-wrap: wrap; gap: 8px; }
+      .timer-text { font-size: 17px; }
+      .dual-auth { flex-direction: column; align-items: stretch; }
+      .dual-auth-actions { flex-direction: column; }
+      .dual-auth-actions .btn { width: 100%; }
+      .modal-overlay { padding: 8px; align-items: flex-start; }
+      .modal-card { max-height: calc(100vh - 16px); }
+      .offline-bar { flex-wrap: wrap; gap: 8px; }
+    }
   </style>
 </head>
 <body>
 
   <header>
     <div>
-      <h1 style="font-size: 20px; font-weight: 800; color: var(--cyan);">⚓ SISTEM KEAGENAN KAPAL NASIONAL</h1>
+      <h1 class="app-title">⚓ SISTEM KEAGENAN KAPAL NASIONAL</h1>
       <p style="font-size: 12px; color: var(--text-muted);">Pelacak Internal Kepatuhan Maritim, Integritas Dokumen & Kalkulasi Komersial</p>
     </div>
     <div>
@@ -116,12 +167,12 @@
         </div>
 
         <!-- Dual Authorization Banner (Putusan Q26) -->
-        <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
+        <div class="dual-auth">
           <div>
             <strong style="font-size: 13px;">Status Penutupan Port Call (Otorisasi Ganda):</strong>
             <div style="font-size: 12px; color: var(--text-muted);" id="closure-status-text">Menunggu Otorisasi Operasional & Keuangan</div>
           </div>
-          <div style="display: flex; gap: 8px;">
+          <div class="dual-auth-actions">
             <button class="btn btn-outline" id="btn-ops-close" onclick="signOpsClosure()">1. Sign-off Ops</button>
             <button class="btn btn-green" id="btn-fin-close" onclick="signFinanceClosure()" disabled>2. Sign-off Finance</button>
           </div>
@@ -139,7 +190,7 @@
 
         <!-- Tab 1: Ringkasan -->
         <div id="tab-overview" class="tab-pane">
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+          <div class="grid-2">
             <div>
               <p><strong>Pelabuhan:</strong> <span id="ov-port">-</span></p>
               <p><strong>Terminal/Dermaga:</strong> <span id="ov-terminal">-</span></p>
@@ -193,7 +244,7 @@
             <button class="btn btn-outline" style="padding: 4px 8px; font-size: 11px;" onclick="syncLocalSOF()">Sinkronkan ke Server</button>
           </div>
 
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
+          <div class="grid-2" style="margin-bottom: 16px;">
             <div style="background: rgba(0,0,0,0.2); padding: 12px; border-radius: 6px;">
               <h4 style="font-size: 13px; margin-bottom: 8px;">Catat Tonggak Waktu (Milestone)</h4>
               <div class="form-group">
@@ -236,7 +287,7 @@
                   <option value="CARGO_WAITING">Menunggu Truk / Muatan</option>
                 </select>
               </div>
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+              <div class="grid-2" style="gap: 8px;">
                 <div class="form-group">
                   <label>Mulai</label>
                   <input type="text" id="stp-start" value="2026-11-02 02:00">
@@ -267,7 +318,7 @@
 
         <!-- Tab 4: Kalkulator Laytime Deterministik -->
         <div id="tab-laytime" class="tab-pane" style="display: none;">
-          <div style="display: grid; grid-template-columns: 350px 1fr; gap: 20px;">
+          <div class="grid-laytime">
             <div style="background: rgba(0,0,0,0.2); padding: 16px; border-radius: 6px;">
               <h4 style="font-size: 13px; margin-bottom: 12px;">Parameter Charter Party</h4>
               <div class="form-group">
@@ -383,6 +434,13 @@
       currentData = await res.json();
       renderDetail();
       loadPortCalls();
+      // Di HP, daftar port call berada DI ATAS detail (grid 1 kolom):
+      // gulirkan detail ke tampilan supaya pengguna tidak perlu mencari
+      // ke mana hasil ketukannya pergi.
+      if (window.innerWidth <= 900) {
+        const el = document.getElementById('pc-detail-card');
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
     }
 
     function renderDetail() {
@@ -943,8 +1001,8 @@
   </script>
 
   <!-- Modal Dialog Buat Port Call Baru (Pre-determined Data) -->
-  <div id="modal-new-pc" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 9999; align-items: center; justify-content: center;">
-    <div class="card" style="width: 520px; max-width: 90vw; background: #0f172a; border: 1px solid var(--cyan); box-shadow: 0 10px 25px rgba(0,0,0,0.6); margin: 0;">
+  <div id="modal-new-pc" class="modal-overlay">
+    <div class="card modal-card" style="background: #0f172a; border: 1px solid var(--cyan); box-shadow: 0 10px 25px rgba(0,0,0,0.6);">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
         <h3 style="margin: 0; color: var(--cyan);">⚓ Buat Port Call Baru</h3>
         <button class="btn btn-outline" style="padding: 2px 8px; font-size: 13px;" onclick="closeNewPortCallModal()">✕</button>
@@ -973,7 +1031,7 @@
         <button class="btn btn-outline" style="padding: 4px 10px; font-size: 11px; margin-top: 6px;" onclick="submitNewVessel()">+ Tambah Kapal Master</button>
       </div>
 
-      <div style="display: grid; grid-template-columns: 1.5fr 1fr; gap: 12px;">
+      <div class="grid-modal-form">
         <div class="form-group">
           <label>Jenis Muatan:</label>
           <input type="text" id="modal-cargo-name" value="Batu Bara (Bulk Coal)">
@@ -1002,8 +1060,8 @@
   </div>
 
   <!-- Modal Edit Dokumen CIGP / Clearance -->
-  <div id="modal-edit-clearance" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 9999; align-items: center; justify-content: center;">
-    <div class="card" style="width: 480px; max-width: 90vw; background: #0f172a; border: 1px solid var(--cyan); box-shadow: 0 10px 25px rgba(0,0,0,0.6); margin: 0;">
+  <div id="modal-edit-clearance" class="modal-overlay">
+    <div class="card modal-card" style="background: #0f172a; border: 1px solid var(--cyan); box-shadow: 0 10px 25px rgba(0,0,0,0.6);">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
         <h3 style="margin: 0; color: var(--cyan);">✏️ Edit Dokumen / Izin CIGP</h3>
         <button class="btn btn-outline" style="padding: 2px 8px; font-size: 13px;" onclick="closeEditClearanceModal()">✕</button>
@@ -1050,8 +1108,8 @@
   </div>
 
   <!-- Modal Tambah Dokumen CIGP Baru -->
-  <div id="modal-new-clearance" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 9999; align-items: center; justify-content: center;">
-    <div class="card" style="width: 500px; max-width: 90vw; background: #0f172a; border: 1px solid var(--cyan); box-shadow: 0 10px 25px rgba(0,0,0,0.6); margin: 0;">
+  <div id="modal-new-clearance" class="modal-overlay">
+    <div class="card modal-card" style="background: #0f172a; border: 1px solid var(--cyan); box-shadow: 0 10px 25px rgba(0,0,0,0.6);">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
         <h3 style="margin: 0; color: var(--cyan);">➕ Tambah Item Dokumen / Perizinan CIGP</h3>
         <button class="btn btn-outline" style="padding: 2px 8px; font-size: 13px;" onclick="closeNewClearanceModal()">✕</button>

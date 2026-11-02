@@ -30,8 +30,11 @@ python3 server.py            # atau: python3 server.py 8000
 Tanpa `SESSION_SECRET` server menolak jalan. User dibuat lewat
 `scripts/create_user.py` (tidak ada user bawaan / pendaftaran publik).
 Detail autentikasi: [Autentikasi (ADR-0011)](#autentikasi-adr-0011-1-nov-2026).
-Server lokal multi-threaded (ADR-0013): satu koneksi yang menggantung
-tidak lagi memblokir request lain.
+Bila sebuah proses ditolak server (mis. sign-off ops sebelum SPB
+terbit), UI menampilkan alasan penolakannya — tidak ada lagi proses
+yang gagal diam-diam (ADR-0014). Sign-off ops juga menampilkan
+daftar dokumen yang belum APPROVED; input waktu/angka yang rusak
+dijawab 400 yang bisa dibaca, bukan 500 (ADR-0015).
 
 Server menjalankan `init_db()` + `seed_sample_data()` saat start. Data contoh
 yang ter-seed: 4 pelabuhan, 15 terminal, 2 cabang, 2 principal, 2 kapal, dan
@@ -187,17 +190,16 @@ render 390px tanpa overflow horizontal.
 ```bash
 python3 -m py_compile server.py engine/db.py engine/laytime.py
 python3 tests/test_laytime.py
-python3 tests/test_api.py     # tes integrasi HTTP (port 8999); memutasi agency.db
+python3 tests/test_api.py     # tes integrasi HTTP (port 8999); memakai DB sementara (AGENCY_DB_FILE), tidak menyentuh agency.db
 # Backend libsql (opsional, butuh paket libsql):
 pip install -r requirements.txt
 python3 tests/test_libsql_backend.py   # SKIP bila libsql belum terinstal
 ```
 
-**Perhatian:** `tests/test_api.py` memutasi `agency.db` (menutup port call
-contoh, membuat port call + kapal uji). Cadangkan dulu (`cp agency.db
-/tmp/agency.db.bak`) dan kembalikan sesudahnya, atau bangun ulang DB bersih
-dengan menghapus `agency.db` lalu menjalankan `python3 server.py` sekali
-(seeding otomatis) dan menghentikannya.
+Sejak ADR-0016, `tests/test_api.py` memakai DB sementara (direktori
+`tempfile`, dibersihkan otomatis) — `agency.db` lokal tidak lagi tercemar
+run tes. CI GitHub Actions (`.github/workflows/test.yml`) menjalankan
+ketiga suite di setiap push/PR (Python 3.12).
 
 ## Persistensi Turso (opsional — untuk deploy Vercel)
 
@@ -277,6 +279,13 @@ lokal, tanpa query DB per request).
   login. Audit mencatat username dari session — nilai `user` dari client
   diabaikan.
 - Login dibatasi 5 percobaan gagal per username per 15 menit (429 sesudahnya).
+  Sejak ADR-0016 kuncinya (username, IP klien) — satu penyerang tidak bisa
+  mengunci akun orang lain. Username tidak boleh mengandung `|` (merusak
+  payload cookie session).
+- Semua teks dari server di-escape sebelum masuk ke DOM (ADR-0016) — tidak
+  ada lagi XSS tersimpan lewat `innerHTML`.
+- Body JSON dibatasi 1 MB (413 bila lebih); header CORS `*` dihapus (UI
+  satu origin dengan API).
 
 ## Keamanan & batasan (jujur)
 
@@ -294,3 +303,11 @@ lokal, tanpa query DB per request).
   seed **harus diganti** dengan data asli perusahaan sebelum dipakai produksi.
 - Akun portal resmi (Inaportnet, INSW, CEISA, Simkapel, SINKARKES) tetap
   dipegang user; sistem ini tidak menyimpan kredensial portal apa pun.
+- **Laytime SHEX:** hari Minggu dikecualikan dari perhitungan; hari libur
+  TIDAK dikecualikan otomatis (tidak ada kalender libur) — catat sebagai
+  jeda SOF manual (ADR-0016).
+- **Hash berkas:** kolom `file_sha256`/`file_name` hanya terisi bila ada
+  berkas yang benar-benar diunggah (fitur upload belum ada); hash yang dulu
+  ditampilkan adalah hash string referensi, bukan bukti berkas, dan sudah
+  dihapus (ADR-0016).
+- **Lisensi:** MIT — lihat `LICENSE` (Copyright (c) 2026 wiharza).

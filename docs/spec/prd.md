@@ -113,8 +113,8 @@ Merujuk pada Putusan **Q18 & Q29**:
 - `submission_time`, `approval_time`: Stempel waktu pengajuan & penerbitan.
 - `expiry_time`: Tenggat kedaluwarsa dokumen (khususnya timer 24 jam SPB).
 - `status`: Enum di kode: `PENDING` | `SUBMITTED` | `APPROVED` | `REJECTED` | `EXPIRED` (tidak ada `DRAFT`; status awal template adalah `PENDING`).
-- `file_name`: Nama berkas lampiran (kode hanya menyimpan nama + hash SHA-256, bukan path/isi berkas).
-- `file_sha256`: Hash SHA-256 berkas digital untuk validitas integritas hukum.
+- `file_name`: Nama berkas lampiran — HANYA terisi bila ada berkas yang benar-benar diunggah (fitur upload belum ada; sebelum ADR-0016 kolom ini diisi nama `.pdf` yang dibuat-buat — lihat Q48).
+- `file_sha256`: Hash SHA-256 isi berkas — HANYA terisi bila ada berkas yang benar-benar diunggah (sebelum ADR-0016 diisi hash dari string referensi, bukan isi berkas — lihat Q48).
 - `submitted_by`: User ID pelaksana.
 
 ### 4.3 Entitas Tonggak & Log SOF (*Milestones & Statement of Facts*)
@@ -236,7 +236,13 @@ dan kode bertentangan, tabel ini yang berlaku sampai salah satunya diperbaiki.
 | Tambah kapal master | ✅ Terimplementasi | `POST /api/master/vessels` (IMO unik); TEST 14; tombol di modal Buat Port Call |
 | Tambah item PDA/FDA | ✅ Terimplementasi | `POST /api/port-calls/<id>/disbursements` + `POST /api/disbursements`; TEST 14 |
 | Audit trail (cakupan di §8) | ⚠️ Sebagian | `log_audit()`; `GET /api/port-calls/<id>/audit-logs`; TEST 15 |
-| Kalkulator laytime deterministik | ✅ Terimplementasi | `engine/laytime.py` (tidak diubah); `tests/test_laytime.py` |
+| Kalkulator laytime deterministik | ✅ Terimplementasi | `engine/laytime.py`; `tests/test_laytime.py`. SHEX kini mengecualikan hari Minggu (ADR-0016); hari libur TIDAK dikecualikan otomatis — catat sebagai jeda SOF manual. |
+| Hash bukti SHA-256 berkas | ⚠️ Belum ada upload | Kolom `file_sha256`/`file_name` ada tapi NULL sampai ada fitur upload berkas (ADR-0016/Q48 mengoreksi Q18; hash palsu dari string referensi sudah dihapus). |
+| Escape XSS di UI | ✅ Terimplementasi | `ui/index.html` helper `esc()` di semua interpolasi data pada `innerHTML`; terverifikasi render browser dengan payload beracun (ADR-0016; TEST 25 tidak langsung — verifikasi CDP). |
+| ID port call anti-bentrok | ✅ Terimplementasi | `server.py` POST /api/port-calls: MAX+1 + retry 5x bila PK bentrok; TEST 24 (termasuk 5x pembuatan bersamaan). |
+| Rate limit login per IP | ✅ Terimplementasi | `engine/auth.py` kunci (username, IP); TEST 26. Sisa: X-Forwarded-For bisa dipalsukan — best-effort (ADR-0016). |
+| Tes DB sementara + CI | ✅ Terimplementasi | `AGENCY_DB_FILE` (DB sementara per run tes); `.github/workflows/test.yml` (3 suite, Python 3.12). |
+| Lisensi | ✅ MIT | `LICENSE` (Copyright (c) 2026 wiharza). |
 | Dual sign-off close-ops → close-finance | ✅ Terimplementasi | `server.py`; TEST 7 |
 | Handover shift | ✅ Terimplementasi | `GET /api/port-calls/<id>/handover`; TEST 8 |
 | Timer SPB 24 jam (banner merah) | ✅ Terimplementasi | `ui/index.html` + `spb_expiry_at` |
@@ -270,7 +276,7 @@ Merujuk pada Putusan **Q8, Q14, dan ADR-0003**:
 | Dimensi | Kebutuhan Spesifik |
 | :--- | :--- |
 | **Integritas & Retensi Data (Q27)** | Seluruh data Port Call berstatus *Closed* disimpan minimal **10 tahun**. Tidak ada mekanisme hapus otomatis (*hard delete*) pada data arsip. |
-| **Integritas Bukti Berkas (Q18)** | Setiap berkas lampiran yang diunggah wajib dihitung hash SHA-256-nya pada saat diterima server dan disimpan di kolom `file_sha256`. |
+| **Integritas Bukti Berkas (Q18, dikoreksi Q48/ADR-0016)** | Setiap berkas lampiran yang diunggah wajib dihitung hash SHA-256-nya pada saat diterima server dan disimpan di kolom `file_sha256`. **Koreksi:** janji ini hanya berlaku bila ada berkas yang diunggah — fitur upload belum ada, jadi kolom `file_sha256`/`file_name` kosong secara sah; hash yang dulu ditampilkan adalah hash string referensi, bukan bukti berkas, dan sudah dihapus. |
 | **Keandalan Koneksi (Q24)** | Modul form SOF dan checklist wajib berfungsi dalam mode semi-offline (menyimpan perubahan di browser) saat staf operasional di dermaga mengalami gangguan sinyal. |
 | **Keamanan Data & Otorisasi** | **[TARGET, belum diimplementasi]** Enkripsi data transit (HTTPS/TLS) dan isolasi multi-kantor cabang (staf cabang A tidak dapat memodifikasi port call cabang B kecuali Super Admin). Autentikasi dasar sudah ada sejak 1 Nov 2026 (ADR-0011: users + roles + session cookie), tapi server tetap berjalan HTTP polos — jangan expose ke internet tanpa TLS di depannya (lihat README). |
 | **Audit Trail Penuh** | Dicatat lewat helper `log_audit()` di `engine/db.py` (31 Okt 2026, ADR-0006), dalam transaksi yang sama dengan perubahan yang diaudit. **Cakupan saat ini:** `CLEARANCE_UPDATE`, `CLEARANCE_ADD`, `SPB_ISSUED`, `MILESTONE_*`, `CLOSE_OPS`, `CLOSE_FINANCE`, `DISBURSEMENT_ADD` — masing-masing menyimpan User ID, nilai lama, nilai baru, stempel waktu. **Belum diaudit:** stoppage SOF, dispute FDA, penambahan master data (kapal/terminal), dan pembuatan port call. **Tidak disimpan:** alamat IP (kolom tidak ada di tabel `audit_logs`). |

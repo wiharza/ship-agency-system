@@ -16,6 +16,17 @@ import http.cookiejar
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+# Tes memakai DB SEMENTARA (ADR-0016), bukan agency.db sungguhan — suite
+# tidak lagi menumpuk port call/kapal uji di DB lokal. HARUS sebelum
+# `from server import ...` karena engine.db menentukan DB_FILE saat import.
+import tempfile
+import atexit
+import shutil
+
+_TEST_TMPDIR = tempfile.mkdtemp(prefix="ship-agency-test-")
+os.environ["AGENCY_DB_FILE"] = os.path.join(_TEST_TMPDIR, "agency-test.db")
+atexit.register(shutil.rmtree, _TEST_TMPDIR, True)
+
 from server import AgencyAPIHandler, run_server
 import socketserver
 
@@ -47,8 +58,10 @@ def test_integration():
     create_user(conn, "adm_tes", "adm-pass-123", "Admin Tes", "ADMIN")
     conn.close()
 
-    socketserver.TCPServer.allow_reuse_address = True  # sebelum bind (TIME_WAIT)
-    server = socketserver.TCPServer(("", TEST_PORT), AgencyAPIHandler)
+    socketserver.ThreadingTCPServer.allow_reuse_address = True  # sebelum bind (TIME_WAIT)
+    # Server tes multi-thread seperti run_server (ADR-0013) — perlu untuk
+    # menguji pembuatan port call bersamaan (Test 24).
+    server = socketserver.ThreadingTCPServer(("", TEST_PORT), AgencyAPIHandler)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
     time.sleep(0.5)
@@ -291,7 +304,9 @@ def test_integration():
             assert res.status == 200
             upd_res = json.loads(res.read().decode("utf-8"))
             assert upd_res["status"] == "success"
-            assert upd_res["file_sha256"] is not None
+            # ADR-0016: tanpa berkas yang diunggah, tidak ada hash —
+            # update tidak lagi membuat hash palsu dari nomor dokumen.
+            assert upd_res["file_sha256"] is None
 
         with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc_id}") as res:
             pdata = json.loads(res.read().decode("utf-8"))
@@ -561,6 +576,178 @@ def test_integration():
         except urllib.error.HTTPError as e:
             assert e.code == 401
         print("[TEST 21/22] Logout: cookie dihapus, API menolak 401 sesudahnya.")
+
+        # 22. Test pesan error: penolakan harus menjelaskan alasannya
+        # (bukan sekadar 400) — close-ops tanpa SPB menyebut alasannya,
+        # dispute dengan nilai bukan angka dijawab 400 JSON (bukan 500).
+        # (Login ulang: tes 21 sudah logout, opener terpasang tak lagi
+        # punya cookie.)
+        ops2 = _login_opener("ops_tes", "ops-pass-123")
+        urllib.request.install_opener(ops2)
+        _expect_400(f"/api/port-calls/{pc2}/close-ops", {"user": "Capt. Hadi"}, "kedaluwarsa")
+        try:
+            urllib.request.urlopen(_post(f"/api/port-calls/{pc2}/dispute",
+                                         {"disbursement_id": 1, "disputed_amount": "bukan-angka", "reason": "tes"}))
+            assert False, "Dispute nilai bukan angka harus ditolak 400"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400, f"Dispute non-angka harus 400, dapat {e.code}"
+            body = json.loads(e.read().decode("utf-8"))
+            assert "angka" in body.get("error", ""), f"Respons 400 dispute harus menjelaskan, dapat {body}"
+        print("[TEST 22/22] Pesan error: close-ops menyebut alasan, dispute non-angka 400 JSON.")
+
+        # 23. Test celah server dari audit pesan error (ADR-0015):
+        # close-ops menyebut dokumen yang belum APPROVED; laytime waktu
+        # salah jadi 400 (bukan 500); dispute menolak item milik port
+        # call lain; stoppage menolak input rusak dengan 400/404.
+        with urllib.request.urlopen(_post("/api/port-calls",
+                {"vessel_imo": "9876543", "port_code": "IDTPP",
+                 "terminal_name": "JICT (Jakarta Int. Container Terminal)",
+                 "cargo_name": "Batu Bara", "cargo_tonnage": 50000,
+                 "eta": "2026-11-12 08:00", "vessel_category": "FOREIGN"})) as res:
+            assert res.status == 200
+            pc3 = json.loads(res.read().decode("utf-8"))["port_call_id"]
+        try:
+            urllib.request.urlopen(_post(f"/api/port-calls/{pc3}/close-ops", {"user": "Capt. Hadi"}))
+            assert False, "close-ops pc3 tanpa SPB harus ditolak 400"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+            body = json.loads(e.read().decode("utf-8"))
+            assert body.get("blockers"), f"Respons 400 close-ops harus berisi daftar blockers, dapat {body}"
+            assert any("Free Pratique" in b for b in body["blockers"]), f"Blockers harus menyebut Free Pratique, dapat {body['blockers']}"
+        _expect_400("/api/port-calls/PC-2026-JKT-0001/laytime/calculate",
+                    {"nor_tendered_time": "12-11-2026 08:00", "commenced_time": "2026-11-12 14:00",
+                     "completed_time": "2026-11-13 14:00"}, "Waktu tidak valid")
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/PC-2026-JKT-0001") as res:
+            det_jkt = json.loads(res.read().decode("utf-8"))
+        dis_lain = det_jkt["disbursements"][0]["id"]
+        _expect_400(f"/api/port-calls/{pc3}/dispute",
+                    {"disbursement_id": dis_lain, "disputed_amount": 1000000, "reason": "tes"},
+                    "tidak ditemukan pada port call ini")
+        _expect_400(f"/api/port-calls/{pc3}/stoppage",
+                    {"category": "RAIN", "start_time": "2026-11-12 10:00", "end_time": "2026-11-12 12:00",
+                     "percentage_counted": "rusak", "remarks": "tes"}, "harus angka")
+        _expect_400(f"/api/port-calls/{pc3}/stoppage",
+                    {"category": "RAIN", "start_time": "12 Nov 2026", "end_time": "2026-11-12 12:00",
+                     "percentage_counted": 0, "remarks": "tes"}, "tidak valid")
+        _expect_400(f"/api/port-calls/{pc3}/stoppage",
+                    {"category": "HUJAN", "start_time": "2026-11-12 10:00", "end_time": "2026-11-12 12:00",
+                     "percentage_counted": 0, "remarks": "tes"}, "tidak dikenal")
+        _expect_status(ops2, "/api/port-calls/PC-TIDAK-ADA/stoppage",
+                       {"category": "RAIN", "start_time": "2026-11-12 10:00", "end_time": "2026-11-12 12:00",
+                        "percentage_counted": 0, "remarks": "tes"}, 404, "tidak ditemukan")
+        print("[TEST 23/23] ADR-0015: blockers close-ops, laytime 400, dispute milik port call, stoppage tervalidasi.")
+
+        # 24. ID port call anti-bentrok (ADR-0016): MAX+1 + retry.
+        # Nomor berurutan: suffix berikutnya = MAX(suffix)+1 (semua pelabuhan,
+        # tahun yang sama — lingkup yang sama dengan SELECT lama).
+        with urllib.request.urlopen(f"{base_url}/api/port-calls") as res:
+            pcs = json.loads(res.read().decode("utf-8"))["port_calls"]
+        max_suffix = max(int(p["id"].rsplit("-", 1)[1]) for p in pcs
+                         if p["id"].startswith("PC-2026-"))
+        with urllib.request.urlopen(_post("/api/port-calls",
+                {"vessel_imo": "9876543", "port_code": "IDTPP",
+                 "terminal_name": "JICT (Jakarta Int. Container Terminal)",
+                 "cargo_name": "Batu Bara", "cargo_tonnage": 50000,
+                 "eta": "2026-11-12 08:00", "vessel_category": "FOREIGN"})) as res:
+            assert res.status == 200
+            pc_seq = json.loads(res.read().decode("utf-8"))["port_call_id"]
+        assert int(pc_seq.rsplit("-", 1)[1]) == max_suffix + 1, \
+            f"ID baru harus MAX+1 ({max_suffix + 1}), dapat {pc_seq}"
+        # 5 pembuatan bersamaan: semuanya harus 200 dengan ID berbeda —
+        # tidak ada yang gagal 500 karena bentrok nomor.
+        created_ids = []
+        errors = []
+
+        def _create_one():
+            try:
+                op = _login_opener("ops_tes", "ops-pass-123")
+                with op.open(_post("/api/port-calls",
+                        {"vessel_imo": "9876543", "port_code": "IDTPP",
+                         "terminal_name": "JICT (Jakarta Int. Container Terminal)",
+                         "cargo_name": "Batu Bara", "cargo_tonnage": 50000,
+                         "eta": "2026-11-12 08:00", "vessel_category": "FOREIGN"})) as res:
+                    created_ids.append(json.loads(res.read().decode("utf-8"))["port_call_id"])
+            except Exception as exc:  # noqa: BLE001 — dikumpulkan, lalu di-assert
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_create_one) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors, f"Pembuatan bersamaan gagal: {errors}"
+        assert len(set(created_ids)) == 5, f"ID harus 5 berbeda, dapat {created_ids}"
+        print("[TEST 24/24] ADR-0016: ID port call MAX+1 + 5x pembuatan bersamaan tanpa bentrok.")
+
+        # 25. Hash jujur (ADR-0016): tanpa berkas yang diunggah, tidak ada
+        # hash — clearance baru & update tidak lagi membuat hash palsu.
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc3}/clearance",
+                {"agency": "BEA_CUKAI", "doc_type": "Dokumen Tes Hash",
+                 "doc_number": "TES-HASH-001", "status": "APPROVED",
+                 "remarks": "tes"})) as res:
+            assert res.status == 200
+            assert json.loads(res.read().decode("utf-8"))["file_sha256"] is None
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc3}") as res:
+            det3 = json.loads(res.read().decode("utf-8"))
+        cl_hash = next(c for c in det3["clearances"] if c["doc_number"] == "TES-HASH-001")
+        assert cl_hash["file_sha256"] is None and cl_hash["file_name"] is None
+        with urllib.request.urlopen(_post(f"/api/clearances/{cl_hash['id']}/update",
+                {"doc_number": "TES-HASH-002", "status": "APPROVED"})) as res:
+            assert res.status == 200
+            assert json.loads(res.read().decode("utf-8"))["file_sha256"] is None
+        # Seed juga sudah bersih: semua clearance contoh tanpa hash/berkas.
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/PC-2026-JKT-0001") as res:
+            det_jkt2 = json.loads(res.read().decode("utf-8"))
+        assert all(c["file_sha256"] is None for c in det_jkt2["clearances"]), \
+            "Seed clearance tidak boleh lagi membawa hash palsu"
+        print("[TEST 25/25] ADR-0016: clearance tanpa berkas -> file_sha256/file_name NULL.")
+
+        # 26. Rate limit per IP, batas body, cargo_tonnage (ADR-0016).
+        def _login_req(username, password, xff=None):
+            headers = {"Content-Type": "application/json"}
+            if xff:
+                headers["X-Forwarded-For"] = xff
+            return urllib.request.Request(
+                f"{base_url}/api/login",
+                data=json.dumps({"username": username, "password": password}).encode("utf-8"),
+                headers=headers)
+
+        # 5x gagal dari IP 203.0.113.1 -> percobaan ke-6 dari IP yang sama 429...
+        for _ in range(5):
+            try:
+                urllib.request.urlopen(_login_req("ops_tes", "salah", "203.0.113.1"))
+                assert False, "Login salah harus 401"
+            except urllib.error.HTTPError as e:
+                assert e.code == 401
+        try:
+            urllib.request.urlopen(_login_req("ops_tes", "salah", "203.0.113.1"))
+            assert False, "Percobaan ke-6 dari IP yang sama harus 429"
+        except urllib.error.HTTPError as e:
+            assert e.code == 429
+        # ...tapi login benar dari IP lain tetap lolos: akun tidak terkunci.
+        with urllib.request.urlopen(_login_req("ops_tes", "ops-pass-123", "198.51.100.7")) as res:
+            assert res.status == 200
+        # cargo_tonnage non-angka -> 400, bukan 500.
+        _expect_400("/api/port-calls",
+                    {"vessel_imo": "9876543", "port_code": "IDTPP",
+                     "cargo_tonnage": "rusak"}, "harus angka")
+        # Body > 1 MB -> 413.
+        try:
+            urllib.request.urlopen(_login_req("x" * 1_100_000, "y"))
+            assert False, "Body > 1 MB harus 413"
+        except urllib.error.HTTPError as e:
+            assert e.code == 413, f"Body besar harus 413, dapat {e.code}"
+            assert "terlalu besar" in e.read().decode("utf-8")
+        # Username mengandung '|' ditolak di create_user (merusak cookie).
+        conn = get_db()
+        try:
+            create_user(conn, "ops|jakarta", "ops-pass-123", "Ops Pipa", "OPS")
+            assert False, "Username '|' harus ditolak"
+        except ValueError as exc:
+            assert "'|'" in str(exc)
+        finally:
+            conn.close()
+        print("[TEST 26/26] ADR-0016: rate-limit per IP, body 413, cargo_tonnage 400, username '|' ditolak.")
 
         print("\nSEMUA INTEGRATION TEST LULUS (100% VERIFIED)!")
 

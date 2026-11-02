@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from email.message import Message as WSGIHeaders
 
-from engine.db import get_db, init_db, seed_sample_data, calculate_file_sha256, log_audit, drop_remote_connection
+from engine.db import get_db, init_db, seed_sample_data, log_audit, drop_remote_connection
 from engine.auth import (
     SESSION_COOKIE_NAME, SESSION_TTL_SECONDS,
     get_session_secret, make_session_cookie, verify_session_cookie,
@@ -24,6 +24,10 @@ from engine.auth import (
 from engine.laytime import LaytimeCalculator, parse_iso
 
 PORT = 8000
+# Batas ukuran body JSON per request (ADR-0016): semua payload sah di
+# aplikasi ini hanya JSON kecil (form + daftar); tanpa batas, satu POST
+# raksasa bisa menghabiskan memori proses.
+MAX_BODY_BYTES = 1_000_000  # 1 MB
 
 # ---------------------------------------------------------------------------
 # Clearance gate SPB & checklist tenggat (PM 28/2022, PM 8/2022, PMK 158/2017
@@ -341,19 +345,17 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(response_bytes)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
         for key, value in (extra_headers or {}).items():
             self.send_header(key, value)
         self.end_headers()
         self.wfile.write(response_bytes)
 
     def do_OPTIONS(self):
+        # Tanpa header CORS: UI dilayani dari origin yang sama, jadi tidak
+        # ada permintaan lintas origin yang sah. Access-Control-Allow-Origin
+        # "*" sebelumnya tidak berguna untuk cookie (browser menolak
+        # credential dengan "*") dan hanya menambah permukaan.
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
     def do_GET(self):
@@ -525,7 +527,7 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 pc = c.fetchone()
                 if not pc:
                     conn.close()
-                    self.send_json({"error": "Not found"}, status=404)
+                    self.send_json({"error": "Port Call tidak ditemukan"}, status=404)
                     return
 
                 # Pending clearances
@@ -557,7 +559,14 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-        length = int(self.headers.get("Content-Length", 0))
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            self.send_json({"error": "Content-Length tidak valid"}, status=400)
+            return
+        if length > MAX_BODY_BYTES:
+            self.send_json({"error": f"Body terlalu besar (maks {MAX_BODY_BYTES // 1024} KB)"}, status=413)
+            return
         body = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
         try:
             payload = json.loads(body)
@@ -571,7 +580,19 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             if not username or not password:
                 self.send_json({"error": "Username dan password wajib diisi"}, status=400)
                 return
-            if is_login_blocked(username):
+            # IP klien untuk rate limit (ADR-0016): hop pertama
+            # X-Forwarded-For bila di belakang proxy (Vercel), kalau tidak
+            # alamat koneksi langsung. Kunci per (username, IP) supaya satu
+            # penyerang tidak bisa mengunci akun orang lain. getattr karena
+            # jalur WSGI tidak punya socket (client_address diisi dari
+            # REMOTE_ADDR di _WSGIRequest; "unknown" bila tetap tak ada).
+            xff = self.headers.get("X-Forwarded-For", "")
+            if xff:
+                client_ip = xff.split(",")[0].strip()
+            else:
+                _addr = getattr(self, "client_address", None)
+                client_ip = _addr[0] if _addr else "unknown"
+            if is_login_blocked(username, client_ip):
                 self.send_json(
                     {"error": "Terlalu banyak percobaan login — coba lagi 15 menit lagi"},
                     status=429)
@@ -585,10 +606,10 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             # nonaktif / password salah) supaya tidak membocorkan user mana
             # yang terdaftar.
             if row is None or not row["active"] or not verify_password(password, row["password_hash"]):
-                record_login_failure(username)
+                record_login_failure(username, client_ip)
                 self.send_json({"error": "Username atau password salah"}, status=401)
                 return
-            clear_login_failures(username)
+            clear_login_failures(username, client_ip)
             try:
                 cookie_value = make_session_cookie(row["username"], row["role"])
             except RuntimeError as exc:
@@ -702,7 +723,12 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             eta = payload.get("eta", datetime.now().strftime("%Y-%m-%d %H:%M"))
             etd = payload.get("etd")  # opsional; bila diisi, tenggat clearance-out dapat dihitung
             cargo_name = payload.get("cargo_name", "General Cargo")
-            cargo_tonnage = float(payload.get("cargo_tonnage", 10000))
+            try:
+                cargo_tonnage = float(payload.get("cargo_tonnage", 10000))
+            except (TypeError, ValueError):
+                # ADR-0016: dulu float() yang gagal melempar ke 500.
+                self.send_json({"error": "cargo_tonnage harus angka"}, status=400)
+                return
 
             if not vessel_imo:
                 self.send_json({"error": "IMO kapal wajib diisi"}, status=400)
@@ -733,60 +759,81 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             if not c.fetchone():
                 c.execute("INSERT OR IGNORE INTO master_terminals (port_code, name, terminal_type) VALUES (?, ?, 'UMUM')", (port_code, terminal_name))
 
-            # Generate ID: PC-YYYY-PORT-XXXX
-            year_str = datetime.now().strftime("%Y")
-            c.execute("SELECT COUNT(*) FROM port_calls WHERE id LIKE ?", (f"PC-{year_str}%",))
-            count = c.fetchone()[0] + 1
-            pc_id = f"PC-{year_str}-{port_code[2:]}-{count:04d}"
-
+            # Generate ID: PC-YYYY-PORT-XXXX (ADR-0016): dulu
+            # COUNT(*)+1 di luar transaksi — dua request bersamaan bisa
+            # mendapat nomor yang sama (satu gagal 500) dan nomor bisa
+            # dipakai ulang bila port call lama dihapus. Kini MAX+1
+            # dengan retry bila primary key bentrok; PK menjamin dua ID
+            # sama tidak pernah sama-sama lolos — yang kalah mengulang
+            # dengan nomor baru.
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            with conn:
-                conn.execute("""
-                INSERT INTO port_calls (id, branch_id, vessel_imo, principal_id, vessel_category, port_code, terminal_name, status, eta, etd, cargo_name, cargo_tonnage, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'PRE_ARRIVAL', ?, ?, ?, ?, ?, ?)
-                """, (pc_id, branch_id, vessel_imo, principal_id, vessel_category, port_code, terminal_name, eta, etd, cargo_name, cargo_tonnage, now_str, now_str))
+            pc_id = None
+            for _attempt in range(5):
+                year_str = datetime.now().strftime("%Y")
+                c.execute(
+                    "SELECT COALESCE(MAX(CAST(SUBSTR(id, -4) AS INTEGER)), 0) "
+                    "FROM port_calls WHERE id LIKE ?",
+                    (f"PC-{year_str}-%",))
+                count = c.fetchone()[0] + 1
+                pc_id = f"PC-{year_str}-{port_code[2:]}-{count:04d}"
+                try:
+                    with conn:
+                        conn.execute("""
+                        INSERT INTO port_calls (id, branch_id, vessel_imo, principal_id, vessel_category, port_code, terminal_name, status, eta, etd, cargo_name, cargo_tonnage, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 'PRE_ARRIVAL', ?, ?, ?, ?, ?, ?)
+                        """, (pc_id, branch_id, vessel_imo, principal_id, vessel_category, port_code, terminal_name, eta, etd, cargo_name, cargo_tonnage, now_str, now_str))
 
-                # Default CP params
-                conn.execute("""
-                INSERT INTO port_call_charter_parties VALUES (?, 'Charterer Standard', 10000, 'SHINC', 20000, 10000, 6)
-                """, (pc_id,))
+                        # Default CP params
+                        conn.execute("""
+                        INSERT INTO port_call_charter_parties VALUES (?, 'Charterer Standard', 10000, 'SHINC', 20000, 10000, 6)
+                        """, (pc_id,))
 
-                # Clearances default template — checklist clearance-in & clearance-out
-                # lengkap, dibedakan ASING (PKKA) vs DOMESTIK (PKK). Lihat
-                # docs/playbook/lampiran/checklist-clearance-in-out.md.
-                first_doc = ("PKKA / Pemberitahuan Kedatangan Kapal Asing"
-                             if vessel_category == "FOREIGN" else "Warta Masuk / PKK")
-                template = [
-                    ("INAPORTNET_SIMPADU", first_doc,
-                     "Warta kedatangan — PM 28/2022 Ps 4: paling lambat 1x24 jam sebelum tiba"),
-                    ("BEA_CUKAI", "RKSP / BC 1.0",
-                     "PMK 158/2017 jo PMK 97/2020: paling lambat 24 jam sebelum kedatangan"),
-                    ("BEA_CUKAI", "Inward Manifest / BC 1.1",
-                     "PMK 158/2017 jo PMK 97/2020: sebelum bongkar; manifes nihil bila tanpa muatan"),
-                    ("KARANTINA_KESEHATAN", "MDH & Free Pratique",
-                     "UU 17/2023 + PP 28/2024: sebelum kapal berhubungan dengan darat"),
-                    ("IMIGRASI", "Immigration Crew List",
-                     "UU 6/2011 Ps 18: pemberitahuan + crew list; shore pass via TPI"),
-                    ("INAPORTNET_SPS", "SPOG Masuk",
-                     "PM 28/2022: persetujuan olah gerak masuk oleh Syahbandar"),
-                    ("BEA_CUKAI", "Outward Manifest / BC 1.1",
-                     "PMK 158/2017 jo PMK 97/2020: sebelum keberangkatan"),
-                    ("KARANTINA_KESEHATAN", "Port Health Clearance Out",
-                     "UU 17/2023 + PP 28/2024: karantina keberangkatan"),
-                    ("IMIGRASI", "Immigration Clearance Out",
-                     "UU 6/2011: outward immigration clearance sebelum SPB"),
-                    ("INAPORTNET_SPS", "Master Sailing Declaration",
-                     "PM 28/2022 Ps 11: MSD syarat permohonan SPB elektronik"),
-                    ("INAPORTNET_SPS", "SPOG Keluar",
-                     "PM 28/2022: persetujuan olah gerak keluar oleh Syahbandar"),
-                    ("INAPORTNET_SPS", "SPB (Surat Persetujuan Berlayar)",
-                     "PM 28/2022 Ps 9: berlaku 24 jam, 1x pelayaran; diterbitkan saat clearance out"),
-                ]
-                conn.executemany(
-                    "INSERT INTO clearances (port_call_id, agency, doc_type, status, remarks) "
-                    "VALUES (?, ?, ?, 'PENDING', ?)",
-                    [(pc_id, agency, doc_type, remarks) for agency, doc_type, remarks in template],
-                )
+                        # Clearances default template — checklist clearance-in & clearance-out
+                        # lengkap, dibedakan ASING (PKKA) vs DOMESTIK (PKK). Lihat
+                        # docs/playbook/lampiran/checklist-clearance-in-out.md.
+                        first_doc = ("PKKA / Pemberitahuan Kedatangan Kapal Asing"
+                                     if vessel_category == "FOREIGN" else "Warta Masuk / PKK")
+                        template = [
+                            ("INAPORTNET_SIMPADU", first_doc,
+                             "Warta kedatangan — PM 28/2022 Ps 4: paling lambat 1x24 jam sebelum tiba"),
+                            ("BEA_CUKAI", "RKSP / BC 1.0",
+                             "PMK 158/2017 jo PMK 97/2020: paling lambat 24 jam sebelum kedatangan"),
+                            ("BEA_CUKAI", "Inward Manifest / BC 1.1",
+                             "PMK 158/2017 jo PMK 97/2020: sebelum bongkar; manifes nihil bila tanpa muatan"),
+                            ("KARANTINA_KESEHATAN", "MDH & Free Pratique",
+                             "UU 17/2023 + PP 28/2024: sebelum kapal berhubungan dengan darat"),
+                            ("IMIGRASI", "Immigration Crew List",
+                             "UU 6/2011 Ps 18: pemberitahuan + crew list; shore pass via TPI"),
+                            ("INAPORTNET_SPS", "SPOG Masuk",
+                             "PM 28/2022: persetujuan olah gerak masuk oleh Syahbandar"),
+                            ("BEA_CUKAI", "Outward Manifest / BC 1.1",
+                             "PMK 158/2017 jo PMK 97/2020: sebelum keberangkatan"),
+                            ("KARANTINA_KESEHATAN", "Port Health Clearance Out",
+                             "UU 17/2023 + PP 28/2024: karantina keberangkatan"),
+                            ("IMIGRASI", "Immigration Clearance Out",
+                             "UU 6/2011: outward immigration clearance sebelum SPB"),
+                            ("INAPORTNET_SPS", "Master Sailing Declaration",
+                             "PM 28/2022 Ps 11: MSD syarat permohonan SPB elektronik"),
+                            ("INAPORTNET_SPS", "SPOG Keluar",
+                             "PM 28/2022: persetujuan olah gerak keluar oleh Syahbandar"),
+                            ("INAPORTNET_SPS", "SPB (Surat Persetujuan Berlayar)",
+                             "PM 28/2022 Ps 9: berlaku 24 jam, 1x pelayaran; diterbitkan saat clearance out"),
+                        ]
+                        conn.executemany(
+                            "INSERT INTO clearances (port_call_id, agency, doc_type, status, remarks) "
+                            "VALUES (?, ?, ?, 'PENDING', ?)",
+                            [(pc_id, agency, doc_type, remarks) for agency, doc_type, remarks in template],
+                        )
+                    break
+                except Exception as exc:
+                    if "constraint failed" not in str(exc):
+                        raise
+                    if _attempt == 4:
+                        conn.close()
+                        self.send_json({"error": "Gagal membuat port call karena bentrok nomor — coba lagi"}, status=500)
+                        return
+                    continue
+
 
             conn.close()
             self.send_json({"status": "success", "port_call_id": pc_id, "message": f"Port Call {pc_id} berhasil dibuat"})
@@ -821,9 +868,13 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     approval_time = None
 
                 file_sha256 = cl["file_sha256"]
-                if new_doc_number and (not file_sha256 or doc_number != cl["doc_number"]):
-                    fake_content = f"{cl['port_call_id']}-{cl['doc_type']}-{new_doc_number}".encode("utf-8")
-                    file_sha256 = calculate_file_sha256(fake_content)
+                # ADR-0016: JANGAN membuat hash dari string referensi
+                # (port_call_id-doc_type-doc_number) lalu menampilkannya
+                # sebagai "bukti integritas" — hash seperti itu tidak
+                # membuktikan apa pun tentang berkas, karena tidak ada
+                # berkas yang diunggah. file_sha256 hanya terisi bila ada
+                # upload berkas sungguhan (belum ada fiturnya); sampai saat
+                # itu nilainya tetap seperti di DB (NULL untuk data baru).
 
                 with conn:
                     conn.execute("""
@@ -906,6 +957,40 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             if len(parts) == 4 and parts[3] == "stoppage":
                 pc_id = parts[2]
                 conn = get_db()
+                c = conn.cursor()
+                c.execute("SELECT id FROM port_calls WHERE id = ?", (pc_id,))
+                if not c.fetchone():
+                    conn.close()
+                    self.send_json({"error": "Port Call tidak ditemukan"}, status=404)
+                    return
+                # Validasi SEBELUM insert (ADR-0015): sebelumnya nilai
+                # rusak langsung melempar ke 500/koneksi putus — float()
+                # gagal, CHECK kategori gagal, FK gagal, dan waktu salah
+                # format tersimpan diam-diam lalu merusak hitung laytime.
+                category = payload.get("category", "OTHER")
+                if category not in ("RAIN", "WEATHER_OTHER", "MEAL_BREAK", "SHIFT_CHANGE",
+                                    "CRANE_BREAKDOWN_SHORE", "WINCH_BREAKDOWN_SHIP",
+                                    "CARGO_WAITING", "SHIFTING_BERTH", "OTHER"):
+                    conn.close()
+                    self.send_json({"error": f"Kategori jeda tidak dikenal: {category}"}, status=400)
+                    return
+                try:
+                    pct = float(payload.get("percentage_counted", 0))
+                except (TypeError, ValueError):
+                    conn.close()
+                    self.send_json({"error": "Persentase jeda harus angka (0-100)"}, status=400)
+                    return
+                for _field, _val in (("start_time", payload.get("start_time")), ("end_time", payload.get("end_time"))):
+                    if not _val:
+                        conn.close()
+                        self.send_json({"error": f"Waktu {_field} wajib diisi (format YYYY-MM-DD HH:MM)"}, status=400)
+                        return
+                    try:
+                        parse_iso(_val)
+                    except Exception as exc:
+                        conn.close()
+                        self.send_json({"error": f"Waktu {_field} tidak valid: {exc}. Pakai format YYYY-MM-DD HH:MM."}, status=400)
+                        return
                 with conn:
                     conn.execute("""
                     INSERT INTO sof_stoppages (port_call_id, start_time, end_time, category, percentage_counted, remarks)
@@ -914,8 +999,8 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                         pc_id,
                         payload.get("start_time"),
                         payload.get("end_time"),
-                        payload.get("category", "OTHER"),
-                        float(payload.get("percentage_counted", 0)),
+                        category,
+                        pct,
                         payload.get("remarks", "")
                     ))
                 conn.close()
@@ -986,12 +1071,13 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 status = payload.get("status", "APPROVED")
                 remarks = payload.get("remarks", "")
                 
+                # ADR-0016: tidak ada berkas yang diunggah, jadi tidak ada
+                # hash berkas. Dulu server membuat hash dari string
+                # "port_call_id-doc_type-doc_number" — itu bukan bukti
+                # integritas apa pun. file_sha256 dan file_name tetap NULL
+                # sampai ada fitur upload berkas sungguhan.
                 file_sha256 = None
-                if doc_number:
-                    fake_file_content = f"{pc_id}-{doc_type}-{doc_number}".encode("utf-8")
-                    file_sha256 = calculate_file_sha256(fake_file_content)
 
-                doc_slug = (doc_type or "doc").lower().replace(' ', '_')
                 conn = get_db()
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 approval_time = now_str if status == "APPROVED" else None
@@ -999,7 +1085,7 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     conn.execute("""
                     INSERT INTO clearances (port_call_id, agency, doc_type, doc_number, submission_time, approval_time, status, file_name, file_sha256, remarks, submitted_by)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (pc_id, agency, doc_type, doc_number, now_str, approval_time, status, f"{doc_slug}.pdf", file_sha256, remarks, actor))
+                    """, (pc_id, agency, doc_type, doc_number, now_str, approval_time, status, None, file_sha256, remarks, actor))
                     log_audit(conn, pc_id, actor, "CLEARANCE_ADD",
                               None, f"{agency} — {doc_type} [{status}] {doc_number}")
                 conn.close()
@@ -1068,7 +1154,21 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     "despatch_rate_per_day": cp["despatch_usd_per_day"],
                     "nor_notice_hours": cp["nor_notice_hours"]
                 })
-                result = calc.calculate(nor_str, comm_str, comp_str, stoppages)
+                try:
+                    result = calc.calculate(nor_str, comm_str, comp_str, stoppages)
+                except ValueError as exc:
+                    # Waktu salah format sebelumnya melempar ke 500
+                    # ("Kesalahan internal server" di WSGI; koneksi putus
+                    # tanpa respons di server lokal) — kini 400 yang
+                    # menyebut format yang benar (ADR-0015). ValueError
+                    # lain (mis. istilah laytime tak dikenal, ADR-0016)
+                    # dikembalikan apa adanya, tanpa embel-embel format.
+                    msg = str(exc)
+                    if "Format timestamp" in msg:
+                        self.send_json({"error": f"Waktu tidak valid: {msg}. Pakai format YYYY-MM-DD HH:MM (contoh: 2026-11-12 08:00) — periksa NOR, mulai/selesai bongkar, dan jeda SOF."}, status=400)
+                    else:
+                        self.send_json({"error": msg}, status=400)
+                    return
                 self.send_json(result)
                 return
 
@@ -1099,17 +1199,27 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     conn.close()
                     self.send_json({"error": f"Otorisasi 1 sudah disahkan {pc['ops_closed_at']} — tidak bisa sign-off dua kali"}, status=400)
                     return
+                # Daftar dokumen yang belum APPROVED — supaya penolakan
+                # menyebut DOKUMEN MANA yang belum lengkap (ADR-0015),
+                # bukan hanya "SPB belum terbit". Daftar yang sama dengan
+                # gate SPB (clearance_spb_gate): prasyarat wajib + item
+                # bersyarat yang sudah ada tapi belum APPROVED.
+                c.execute("SELECT * FROM clearances WHERE port_call_id = ?", (pc_id,))
+                blockers, _ = clearance_spb_gate([dict(r) for r in c.fetchall()])
                 if not pc["spb_issued_at"]:
                     conn.close()
-                    self.send_json({"error": "Gagal: SPB belum terbit — kapal belum boleh berlayar, ops tidak bisa ditutup (PM 28/2022)"}, status=400)
+                    self.send_json({"error": "SPB belum terbit — kapal belum boleh berlayar, ops tidak bisa ditutup (PM 28/2022)",
+                                    "blockers": blockers}, status=400)
                     return
                 if pc["spb_expiry_at"] and datetime.now() > parse_iso(pc["spb_expiry_at"]):
                     conn.close()
-                    self.send_json({"error": f"Gagal: SPB sudah kedaluwarsa {pc['spb_expiry_at']} — terbitkan SPB baru sebelum menutup ops"}, status=400)
+                    self.send_json({"error": f"SPB sudah kedaluwarsa {pc['spb_expiry_at']} — terbitkan SPB baru sebelum menutup ops",
+                                    "blockers": blockers}, status=400)
                     return
                 if pc["status"] != "DEPARTED":
                     conn.close()
-                    self.send_json({"error": f"Gagal: status kapal masih {pc['status']} — ops hanya bisa ditutup setelah kapal DEPARTED"}, status=400)
+                    self.send_json({"error": f"status kapal masih {pc['status']} — ops hanya bisa ditutup setelah kapal DEPARTED",
+                                    "blockers": blockers}, status=400)
                     return
                 with conn:
                     conn.execute("""
@@ -1137,7 +1247,7 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 row = c.fetchone()
                 if not row or not row["ops_closed_at"]:
                     conn.close()
-                    self.send_json({"error": "Gagal: Otorisasi 1 (Operasional) wajib diselesaikan terlebih dahulu!"}, status=400)
+                    self.send_json({"error": "Otorisasi 1 (Operasional) wajib diselesaikan terlebih dahulu!"}, status=400)
                     return
 
                 with conn:
@@ -1155,11 +1265,33 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             if len(parts) == 4 and parts[3] == "dispute":
                 pc_id = parts[2]
                 disbursement_id = payload.get("disbursement_id", 1)
-                amount = float(payload.get("disputed_amount", 0))
+                try:
+                    amount = float(payload.get("disputed_amount", 0))
+                except (TypeError, ValueError):
+                    # Sebelumnya float() yang gagal melempar ke handler 500
+                    # (halaman HTML, bukan JSON) — UI tidak bisa menampilkan
+                    # alasannya. Kini 400 JSON supaya UI bisa menjelaskannya.
+                    self.send_json({"error": "Nilai sengketa harus angka (IDR)"}, status=400)
+                    return
                 reason = payload.get("reason", "Keberatan tarif")
                 deadline = (datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d")
 
                 conn = get_db()
+                c = conn.cursor()
+                c.execute("SELECT id FROM port_calls WHERE id = ?", (pc_id,))
+                if not c.fetchone():
+                    conn.close()
+                    self.send_json({"error": "Port Call tidak ditemukan"}, status=404)
+                    return
+                # Item biaya HARUS milik port call ini (ADR-0015):
+                # sebelumnya sengketa atas item port call lain diterima
+                # begitu saja (200) — data sengketa jadi salah alamat.
+                c.execute("SELECT id FROM disbursements WHERE id = ? AND port_call_id = ?",
+                          (disbursement_id, pc_id))
+                if not c.fetchone():
+                    conn.close()
+                    self.send_json({"error": "Item biaya tidak ditemukan pada port call ini — periksa kembali item PDA/FDA yang disengketakan"}, status=400)
+                    return
                 with conn:
                     conn.execute("""
                     INSERT INTO fda_disputes (port_call_id, disbursement_id, disputed_amount, principal_reason, deadline_date, status, resolution_notes)
@@ -1250,6 +1382,11 @@ class _WSGIRequest(AgencyAPIHandler):
             self.headers["Content-Length"] = environ["CONTENT_LENGTH"]
         self.rfile = io.BytesIO(body)
         self.wfile = io.BytesIO()
+        # Alamat klien untuk rate limit login (ADR-0016): di WSGI tidak ada
+        # socket, jadi ambil dari REMOTE_ADDR yang diisi platform (Vercel
+        # mengisinya dengan IP klien). Tanpa ini, handler login yang membaca
+        # self.client_address akan 500 di Vercel.
+        self.client_address = (environ.get("REMOTE_ADDR", "wsgi"), 0)
 
     def log_request(self, code="-", size="-"):  # request log dikelola platform WSGI
         pass

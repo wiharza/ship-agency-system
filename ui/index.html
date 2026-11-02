@@ -229,7 +229,7 @@
                 <th>Jenis Dokumen</th>
                 <th>Nomor Dokumen</th>
                 <th>Status</th>
-                <th>Hash Integritas (SHA-256)</th>
+                <th>Sidik jari (SHA-256)</th>
                 <th style="width: 80px; text-align: center;">Aksi</th>
               </tr>
             </thead>
@@ -401,6 +401,18 @@
     let currentData = null;
     let timerInterval = null;
 
+    // Escape teks sebelum dimasukkan ke innerHTML (ADR-0016): data dari
+    // server (nama kapal, nomor dokumen, remarks, ...) adalah input
+    // pengguna dan bisa berisi markup — tanpa escape, skrip tertanam akan
+    // jalan sebagai user yang sedang login (stored XSS) dan bisa memanggil
+    // API (terbitkan SPB, tutup finance). Cookie HttpOnly tidak bisa
+    // dicuri, tapi itu tidak menghentikan pemanggilan API dari halaman.
+    function esc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
     async function loadPortCalls() {
       const res = await fetch('/api/port-calls');
       if (res.status === 401) { location.reload(); return; }  // session habis -> halaman login
@@ -413,11 +425,11 @@
         item.className = 'pc-item' + (pc.id === activePortCallId ? ' active' : '');
         item.onclick = () => selectPortCall(pc.id);
         item.innerHTML = `
-          <div class="pc-vessel">${pc.vessel_name}</div>
-          <div class="pc-meta">${pc.id} | ${pc.port_name}</div>
+          <div class="pc-vessel">${esc(pc.vessel_name)}</div>
+          <div class="pc-meta">${esc(pc.id)} | ${esc(pc.port_name)}</div>
           <div style="margin-top: 6px; display: flex; gap: 4px;">
-            <span class="badge ${pc.vessel_category === 'FOREIGN' ? 'badge-yellow' : 'badge-cyan'}">${pc.vessel_category}</span>
-            <span class="badge badge-green">${pc.status}</span>
+            <span class="badge ${pc.vessel_category === 'FOREIGN' ? 'badge-yellow' : 'badge-cyan'}">${esc(pc.vessel_category)}</span>
+            <span class="badge badge-green">${esc(pc.status)}</span>
           </div>
         `;
         listEl.appendChild(item);
@@ -461,8 +473,8 @@
       // Badges
       const badgesEl = document.getElementById('view-badges');
       badgesEl.innerHTML = `
-        <span class="badge ${currentData.vessel_category === 'FOREIGN' ? 'badge-yellow' : 'badge-cyan'}">${currentData.vessel_category}</span>
-        <span class="badge badge-green">${currentData.status}</span>
+        <span class="badge ${currentData.vessel_category === 'FOREIGN' ? 'badge-yellow' : 'badge-cyan'}">${esc(currentData.vessel_category)}</span>
+        <span class="badge badge-green">${esc(currentData.status)}</span>
       `;
 
       // Dual Sign-Off Status
@@ -501,11 +513,11 @@
         const tr = document.createElement('tr');
         const badgeClass = cl.status === 'APPROVED' ? 'badge-green' : (cl.status === 'REJECTED' ? 'badge-red' : 'badge-yellow');
         tr.innerHTML = `
-          <td><strong style="color:var(--cyan);">${cl.agency}</strong></td>
-          <td>${cl.doc_type}</td>
-          <td>${cl.doc_number || '<span style="color:var(--yellow)">Belum Terbit</span>'}</td>
-          <td><span class="badge ${badgeClass}">${cl.status}</span></td>
-          <td class="mono" title="${cl.file_sha256 || ''}">${cl.file_sha256 ? cl.file_sha256.substring(0, 16) + '...' : '-'}</td>
+          <td><strong style="color:var(--cyan);">${esc(cl.agency)}</strong></td>
+          <td>${esc(cl.doc_type)}</td>
+          <td>${cl.doc_number ? esc(cl.doc_number) : '<span style="color:var(--yellow)">Belum Terbit</span>'}</td>
+          <td><span class="badge ${badgeClass}">${esc(cl.status)}</span></td>
+          <td class="mono" title="${cl.file_sha256 ? 'Sidik jari referensi — bukan bukti isi berkas (sistem belum menyimpan berkas)' : ''}">${cl.file_sha256 ? esc(cl.file_sha256.substring(0, 16)) + '...' : 'Tidak ada berkas'}</td>
           <td style="text-align: center;"><button class="btn btn-outline" style="padding: 2px 8px; font-size: 11px;" onclick="openEditClearanceModal(${cl.id})">Edit</button></td>
         `;
         clTable.appendChild(tr);
@@ -517,11 +529,11 @@
       (currentData.stoppages || []).forEach(s => {
         const tr = document.createElement('tr');
         tr.innerHTML = `
-          <td>${s.start_time}</td>
-          <td>${s.end_time}</td>
-          <td><span class="badge badge-yellow">${s.category}</span></td>
-          <td>${s.percentage_counted}%</td>
-          <td>${s.remarks || '-'}</td>
+          <td>${esc(s.start_time)}</td>
+          <td>${esc(s.end_time)}</td>
+          <td><span class="badge badge-yellow">${esc(s.category)}</span></td>
+          <td>${esc(s.percentage_counted)}%</td>
+          <td>${esc(s.remarks) || '-'}</td>
         `;
         stpTable.appendChild(tr);
       });
@@ -532,11 +544,11 @@
       (currentData.disbursements || []).forEach(d => {
         const tr = document.createElement('tr');
         tr.innerHTML = `
-          <td><span class="badge badge-cyan">${d.category}</span></td>
-          <td>${d.item_name}</td>
+          <td><span class="badge badge-cyan">${esc(d.category)}</span></td>
+          <td>${esc(d.item_name)}</td>
           <td>Rp ${Number(d.pda_estimate).toLocaleString('id-ID')}</td>
           <td>Rp ${Number(d.fda_actual).toLocaleString('id-ID')}</td>
-          <td>${d.ntpn ? 'NTPN: ' + d.ntpn : (d.simponi_billing ? 'Bill: ' + d.simponi_billing : '-')}</td>
+          <td>${d.ntpn ? 'NTPN: ' + esc(d.ntpn) : (d.simponi_billing ? 'Bill: ' + esc(d.simponi_billing) : '-')}</td>
           <td><button class="btn btn-outline" style="padding:2px 8px; font-size:11px;" onclick="openDisputeModal(${d.id})">Ajukan Sengketa</button></td>
         `;
         finTable.appendChild(tr);
@@ -548,11 +560,11 @@
       (currentData.disputes || []).forEach(dp => {
         const tr = document.createElement('tr');
         tr.innerHTML = `
-          <td>${dp.item_name}</td>
+          <td>${esc(dp.item_name)}</td>
           <td>Rp ${Number(dp.disputed_amount).toLocaleString('id-ID')}</td>
-          <td>${dp.principal_reason}</td>
-          <td>${dp.deadline_date}</td>
-          <td><span class="badge badge-red">${dp.status}</span></td>
+          <td>${esc(dp.principal_reason)}</td>
+          <td>${esc(dp.deadline_date)}</td>
+          <td><span class="badge badge-red">${esc(dp.status)}</span></td>
         `;
         dTable.appendChild(tr);
       });
@@ -601,11 +613,18 @@
       const event_time = document.getElementById('ms-time').value;
       const remarks = document.getElementById('ms-remarks').value;
 
-      await fetch(`/api/port-calls/${activePortCallId}/milestone`, {
+      const res = await fetch(`/api/port-calls/${activePortCallId}/milestone`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ milestone_code: code, event_time, remarks })
       });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // Milestone tetap tercatat sebagai fakta lapangan, tapi status
+        // tidak berubah (mis. SAILED tanpa SPB valid) — beri tahu user.
+        alert((data.milestone_recorded ? "Milestone TERCATAT, tetapi status kapal tidak berubah: " : "Gagal: ") + (data.error || "Terjadi kesalahan"));
+        return;
+      }
       selectPortCall(activePortCallId);
     }
 
@@ -614,11 +633,13 @@
       const start_time = document.getElementById('stp-start').value;
       const end_time = document.getElementById('stp-end').value;
 
-      await fetch(`/api/port-calls/${activePortCallId}/stoppage`, {
+      const res = await fetch(`/api/port-calls/${activePortCallId}/stoppage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ category, start_time, end_time, percentage_counted: 0, remarks: "Dicatat di dermaga" })
       });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert("Gagal: " + (data.error || "Terjadi kesalahan")); return; }
       selectPortCall(activePortCallId);
     }
 
@@ -632,7 +653,13 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ nor_tendered_time, commenced_time, completed_time })
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      // Tanpa cek ini, data.result undefined saat server menolak (400)
+      // dan baris berikut melempar TypeError — kalkulasi gagal diam-diam.
+      if (!res.ok || !data.result) {
+        alert("Gagal: " + (data.error || "Hasil kalkulasi tidak tersedia"));
+        return;
+      }
       
       const out = document.getElementById('laytime-output');
       const isDemurrage = data.result.is_demurrage;
@@ -640,12 +667,14 @@
         <div style="font-size: 18px; font-weight: 800; margin-bottom: 8px; color: ${isDemurrage ? '#f87171' : '#34d399'};">
           STATUS: ${data.result.claim_type} — $${Number(data.result.amount_usd).toLocaleString()} USD
         </div>
+        <p><strong>Ketentuan (terms):</strong> ${esc(data.terms || 'SHINC')}${data.terms === 'SHEX' ? ` — ${data.sundays_excluded.count} hari Minggu dikecualikan (${esc(data.laytime_used.sundays_excluded_formatted)})` : ''}</p>
         <p><strong>Laytime Diizinkan (Allowed):</strong> ${data.laytime_allowed.formatted} (${data.laytime_allowed.days_decimal} hari)</p>
         <p><strong>Laytime Faktual Terpakai (Net Used):</strong> ${data.laytime_used.net_formatted}</p>
         <p><strong>Deduksi Jeda Operasional (Cuaca/Jeda):</strong> ${data.laytime_used.deducted_formatted}</p>
         <p><strong>Selisih Waktu Komersial:</strong> ${data.result.difference_formatted} (${data.result.difference_days} hari)</p>
         <div style="margin-top: 10px; font-size: 11px; color: var(--text-muted);">
           Kalkulasi diverifikasi deterministik dengan Python stdlib tanpa deviasi floating point.
+          ${data.terms === 'SHEX' ? 'Hari libur tidak dikecualikan otomatis (sistem tidak punya kalender libur) — catat sebagai jeda SOF kategori Lainnya dengan keterangan "Libur: ...".' : ''}
         </div>
       `;
     }
@@ -677,21 +706,21 @@
           const badge = (st) => st === 'APPROVED' ? 'badge-green' : (st === 'BELUM ADA' ? 'badge-red' : 'badge-yellow');
           const row = (it) => `<tr>
             <td>${it.phase === 'CLEARANCE_IN' ? 'Clearance In' : 'Clearance Out'}</td>
-            <td>${it.doc_type}</td>
-            <td>${it.agency}</td>
-            <td>${it.deadline || '—'}</td>
-            <td><span class="badge ${badge(it.status)}">${it.status}</span></td>
-            <td style="font-size:11px;color:${it.overdue ? '#f87171' : (it.due_soon ? '#fbbf24' : 'var(--text-muted)')};">${it.warning || it.basis}</td>
+            <td>${esc(it.doc_type)}</td>
+            <td>${esc(it.agency)}</td>
+            <td>${esc(it.deadline) || '—'}</td>
+            <td><span class="badge ${badge(it.status)}">${esc(it.status)}</span></td>
+            <td style="font-size:11px;color:${it.overdue ? '#f87171' : (it.due_soon ? '#fbbf24' : 'var(--text-muted)')};">${esc(it.warning || it.basis)}</td>
           </tr>`;
           el.innerHTML = `
             <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
               <strong style="font-size:13px;">Checklist Clearance — Tenggat dari ETA/ETD</strong>
               <span class="badge ${d.can_issue_spb ? 'badge-green' : 'badge-red'}">${d.can_issue_spb ? '✓ SPB BISA DITERBITKAN' : '✕ SPB BELUM BISA DITERBITKAN'}</span>
             </div>
-            ${d.blockers && d.blockers.length ? `<div style="color:#f87171;font-size:12px;margin-bottom:8px;">Penghalang SPB:<br>• ${d.blockers.join('<br>• ')}</div>` : ''}
+            ${d.blockers && d.blockers.length ? `<div style="color:#f87171;font-size:12px;margin-bottom:8px;">Penghalang SPB:<br>• ${d.blockers.map(esc).join('<br>• ')}</div>` : ''}
             <table><thead><tr><th>Fase</th><th>Dokumen</th><th>Instansi</th><th>Tenggat</th><th>Status</th><th>Dasar / Peringatan</th></tr></thead>
             <tbody>${d.items.map(row).join('')}</tbody></table>
-            <p style="font-size:11px;color:var(--text-muted);margin-top:6px;">${d.note}</p>`;
+            <p style="font-size:11px;color:var(--text-muted);margin-top:6px;">${esc(d.note)}</p>`;
         })
         .catch(() => { el.innerHTML = 'Checklist tidak dapat dimuat.'; });
     }
@@ -734,35 +763,49 @@
 
     async function signOpsClosure() {
       if (!confirm("Konfirmasi pengesahan Otorisasi 1 (Operasional): Seluruh perizinan selesai & kapal telah berangkat?")) return;
-      await fetch(`/api/port-calls/${activePortCallId}/close-ops`, {
+      const res = await fetch(`/api/port-calls/${activePortCallId}/close-ops`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user: "Capt. Hadi (Doc/Ops Lead)" })
       });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // Server menyertakan daftar dokumen yang belum APPROVED
+        // (ADR-0015) — tampilkan supaya user tahu apa yang kurang.
+        const daftar = (data.blockers && data.blockers.length)
+          ? "\nDokumen belum lengkap:\n- " + data.blockers.join("\n- ") : "";
+        alert("Gagal: " + (data.error || "Terjadi kesalahan") + daftar);
+        return;
+      }
       selectPortCall(activePortCallId);
     }
 
     async function signFinanceClosure() {
       if (!confirm("Konfirmasi pengesahan Otorisasi 2 (Keuangan): Rekonsiliasi FDA selesai & saldo telah diselesaikan?")) return;
-      await fetch(`/api/port-calls/${activePortCallId}/close-finance`, {
+      const res = await fetch(`/api/port-calls/${activePortCallId}/close-finance`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user: "Ibu Ratna (Finance Manager)" })
       });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert("Gagal: " + (data.error || "Terjadi kesalahan")); return; }
       selectPortCall(activePortCallId);
     }
 
-    function openDisputeModal(disbursementId) {
+    async function openDisputeModal(disbursementId) {
       const amt = prompt("Masukkan nilai sengketa FDA (IDR):", "3200000");
       if (!amt) return;
       const reason = prompt("Masukkan alasan sanggahan Principal:", "Klaim tarif tunda melebihi estimasi awal tanpa persetujuan");
       if (!reason) return;
 
-      fetch(`/api/port-calls/${activePortCallId}/dispute`, {
+      const res = await fetch(`/api/port-calls/${activePortCallId}/dispute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ disbursement_id: disbursementId, disputed_amount: amt, reason })
-      }).then(() => selectPortCall(activePortCallId));
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert("Gagal: " + (data.error || "Terjadi kesalahan")); return; }
+      selectPortCall(activePortCallId);
     }
 
     function copyHandover() {
@@ -773,10 +816,10 @@
     }
 
     function syncLocalSOF() {
-      document.getElementById('storage-status').innerText = "✓ Sinkronisasi ke server berhasil! Data terpadu aman.";
-      setTimeout(() => {
-        document.getElementById('storage-status').innerText = "💾 Tersimpan lokal di peramban (Aman dari sinyal blank-spot)";
-      }, 3000);
+      // JANGAN klaim berhasil: belum ada sinkronisasi sungguhan ke server
+      // (fitur offline SOF masih [TARGET] di PRD). Teks lama ("Sinkronisasi
+      // ke server berhasil!") bohong — tidak ada request yang dikirim.
+      document.getElementById('storage-status').innerText = "Tersimpan lokal di peramban — belum disinkronkan ke server (sinkronisasi otomatis belum tersedia).";
     }
 
     let cachedMasterData = null;
@@ -798,13 +841,13 @@
       const vesselSelect = document.getElementById('modal-vessel-select');
       
       // Populate Ports
-      portSelect.innerHTML = (cachedMasterData.ports || []).map(p => 
-        `<option value="${p.code}">${p.code} - ${p.name} (${p.province}) [${p.inaportnet_level}]</option>`
+      portSelect.innerHTML = (cachedMasterData.ports || []).map(p =>
+        `<option value="${esc(p.code)}">${esc(p.code)} - ${esc(p.name)} (${esc(p.province)}) [${esc(p.inaportnet_level)}]</option>`
       ).join('');
 
       // Populate Vessels
-      vesselSelect.innerHTML = (cachedMasterData.vessels || []).map(v => 
-        `<option value="${v.imo}" data-flag="${v.flag}">${v.name} (IMO: ${v.imo}) - [${v.flag === 'ID' ? 'DOMESTIK' : 'ASING'}]</option>`
+      vesselSelect.innerHTML = (cachedMasterData.vessels || []).map(v =>
+        `<option value="${esc(v.imo)}" data-flag="${esc(v.flag)}">${esc(v.name)} (IMO: ${esc(v.imo)}) - [${v.flag === 'ID' ? 'DOMESTIK' : 'ASING'}]</option>`
       ).join('');
 
       // Default ETA: Besok jam 08:00
@@ -827,7 +870,7 @@
       const port = (cachedMasterData?.ports || []).find(p => p.code === portCode);
 
       if (port && port.terminals && port.terminals.length > 0) {
-        let opts = port.terminals.map(t => `<option value="${t.name}">${t.name} (${t.terminal_type} - Max Draft: ${t.max_draft || '-'}m)</option>`).join('');
+        let opts = port.terminals.map(t => `<option value="${esc(t.name)}">${esc(t.name)} (${esc(t.terminal_type)} - Max Draft: ${esc(t.max_draft) || '-'}m)</option>`).join('');
         opts += `<option value="__NEW__">➕ [+ Input Terminal / Dermaga Baru...]</option>`;
         termSelect.innerHTML = opts;
       } else {

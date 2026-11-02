@@ -178,7 +178,7 @@ def build_clearance_checklist(pc, clearances):
         # (tidak pernah overdue); status PENDING/APPROVED yang dipantau.
         ("CLEARANCE_IN", "spkk", "SPKK / RKBM (Persetujuan Kegiatan Kapal)",
          "INAPORTNET_SIMPADU", None,
-         "PM 59/2021: sebelum derek pertama bekerja — HUKUM, penghentian paksa oleh Syahbandar"),
+         "PM 59/2021: sebelum derek pertama bekerja — HUKUM, penghentian paksa oleh Syahbandar (tanpa tenggat tanggal — peristiwa, bukan jam)"),
         ("CLEARANCE_OUT", "outward", "Outward Manifest / BC 1.1", "BEA_CUKAI",
          etd, "PMK 158/2017 jo PMK 97/2020: sebelum keberangkatan"),
         ("CLEARANCE_OUT", "phc_out", "Port Health Clearance Out", "KARANTINA_KESEHATAN",
@@ -345,7 +345,8 @@ def cert_alerts_for(certs):
         if st == "ok":
             continue
         alerts.append({"cert_type": c.get("cert_type"), "cert_number": c.get("cert_number"),
-                       "expiry_date": c.get("expiry_date"), "days_left": dl, "status": st})
+                       "expiry_date": c.get("expiry_date"), "days_left": dl, "status": st,
+                       "notes": c.get("notes")})
     return sorted(alerts, key=lambda a: a["days_left"])
 
 
@@ -1182,6 +1183,10 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                         issued = datetime.strptime(issued_raw, "%Y-%m-%d").date()
                     except ValueError:
                         raise _BadRequest("issued_date harus tanggal valid (YYYY-MM-DD)")
+                # Tindak lanjut review: tanggal kedaluwarsa tidak boleh
+                # lebih awal dari tanggal terbit (data kotor).
+                if issued and expiry < issued:
+                    raise _BadRequest("expiry_date harus sama atau setelah issued_date")
                 cert_number = _opt_text(payload.get("cert_number"), "cert_number")
                 notes = _opt_text(payload.get("notes"), "notes")
                 conn = get_db()
@@ -1445,7 +1450,7 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                             ("INAPORTNET_SPS", "SPOG Masuk",
                              "PM 28/2022: persetujuan olah gerak masuk oleh Syahbandar"),
                             ("INAPORTNET_SIMPADU", "SPKK / RKBM (Persetujuan Kegiatan Kapal)",
-                             "PM 59/2021: sebelum derek pertama bekerja — HUKUM, penghentian paksa oleh Syahbandar"),
+                             "PM 59/2021: sebelum derek pertama bekerja — HUKUM, penghentian paksa oleh Syahbandar (tanpa tenggat tanggal — peristiwa, bukan jam)"),
                             ("BEA_CUKAI", "Outward Manifest / BC 1.1",
                              "PMK 158/2017 jo PMK 97/2020: sebelum keberangkatan"),
                             ("KARANTINA_KESEHATAN", "Port Health Clearance Out",

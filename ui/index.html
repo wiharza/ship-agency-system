@@ -564,7 +564,10 @@
       const cls = c.status === 'expired' ? 'badge-red' : (c.status === 'expiring' ? 'badge-yellow' : 'badge-green');
       const when = c.status === 'expired' ? `kedaluwarsa ${-c.days_left}d lalu`
         : (c.status === 'expiring' ? `${c.days_left}d lagi` : `s.d. ${esc(c.expiry_date)}`);
-      return `<span class="badge ${cls}">${esc(c.cert_type)} — ${when}</span>`;
+      // Tindak lanjut review: catatan (mis. penanda placeholder) tampil
+      // sebagai tooltip, supaya operator tidak mengira tanggal itu resmi.
+      const tip = c.notes ? ` title="${esc(c.notes)}"` : '';
+      return `<span class="badge ${cls}"${tip}>${esc(c.cert_type)} — ${when}</span>`;
     }
 
     async function selectPortCall(id) {
@@ -1150,6 +1153,9 @@
       const notes = document.getElementById('new-cert-notes').value.trim();
       if (!cert_type) { alert("Jenis sertifikat wajib diisi!"); return; }
       if (!expiry_date) { alert("Tanggal kedaluwarsa wajib diisi!"); return; }
+      // Tindak lanjut review: tanggal kedaluwarsa tidak boleh lebih awal
+      // dari tanggal terbit (server juga menolaknya — ini cegah dini di UI).
+      if (issued_date && expiry_date < issued_date) { alert("Tanggal kedaluwarsa harus sama atau setelah tanggal terbit!"); return; }
       const res = await fetch(`/api/vessels/${currentData.vessel_imo}/certificates`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cert_type, cert_number, issued_date: issued_date || null, expiry_date, notes })

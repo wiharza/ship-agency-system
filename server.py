@@ -221,9 +221,60 @@ def _closed_lock_message(pc):
     return None
 
 
+# -- Validasi input (ADR-0019) -------------------------------------------
+# CHECK constraint di skema (engine/db.py) adalah pertahanan terakhir,
+# bukan validasi: nilai yang lolos dari sini melempar IntegrityError di
+# tengah transaksi dan — di server lokal — menutup koneksi tanpa respons
+# JSON sama sekali (terbukti: status "approved" huruf kecil, agency
+# "POLISI", milestone tanpa code, doc_number angka). Karena itu setiap
+# nilai payload yang masuk ke kolom ber-CHECK / NOT NULL harus
+# dinormalisasi + di-whitelist DI SINI, sebelum query apa pun.
+# _BadRequest diubah menjadi 400 JSON oleh safety net di do_GET/do_POST.
+class _BadRequest(Exception):
+    """Validasi input gagal — safety net mengubahnya menjadi 400 JSON."""
+
+CLEARANCE_STATUSES = ("PENDING", "SUBMITTED", "APPROVED", "REJECTED", "EXPIRED")
+CLEARANCE_AGENCIES = ("INAPORTNET_SIMPADU", "INAPORTNET_SPS", "BEA_CUKAI", "IMIGRASI", "KARANTINA_KESEHATAN", "BARANTIN", "BUP_PELINDO")
+MILESTONE_CODES = ("EOSP", "ANCHORED", "NOR_TENDERED", "FREE_PRATIQUE", "PILOT_ON_BOARD", "FIRST_LINE", "ALL_FAST", "COMMENCED_CARGO", "COMPLETED_CARGO", "CAST_OFF", "SAILED")
+
+def _norm_enum(value, allowed, field):
+    """Normalisasi + whitelist nilai enum dari payload. None berarti tidak
+    diberikan (pemanggil yang memutuskan: pakai nilai lama / wajib isi)."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise _BadRequest(f"{field} harus berupa teks")
+    v = value.strip().upper()
+    if v not in allowed:
+        raise _BadRequest(f"{field} tidak dikenal: {value.strip()!r} — harus salah satu dari: {', '.join(allowed)}")
+    return v
+
+def _opt_text(value, field):
+    """Teks opsional: None bila tidak diberikan, string ter-strip bila ada."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise _BadRequest(f"{field} harus berupa teks")
+    return value.strip()
+
+def _req_text(value, field):
+    """Teks wajib: tidak boleh kosong dan harus berupa string."""
+    v = _opt_text(value, field)
+    if not v:
+        raise _BadRequest(f"{field} wajib diisi")
+    return v
+
+def _strip_or_empty(value):
+    """Untuk field yang dulu memakai `(payload.get(...) or "").strip()`:
+    nilai non-string (mis. angka) dulu melempar AttributeError dan menutup
+    koneksi — kini diperlakukan seperti tidak diisi, lalu validasi
+    'wajib diisi' di bawahnya yang berbicara (400)."""
+    return value.strip() if isinstance(value, str) else ""
+
+
 def _insert_disbursement(conn, pc_id, payload):
     category = payload.get("category")
-    item_name = (payload.get("item_name") or "").strip()
+    item_name = _strip_or_empty(payload.get("item_name"))
     allowed = ("PNBP_KEMENHUB", "BUP_PELINDO", "CIGP_INSTANSI", "HUSBANDRY", "AGENCY_FEE")
     if category not in allowed:
         return None, f"category wajib salah satu dari: {', '.join(allowed)}"
@@ -362,14 +413,25 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(content)))
+        self._security_headers()
         self.end_headers()
         self.wfile.write(content)
+
+    def _security_headers(self):
+        """Header keamanan default (ADR-0019, defense in depth — UI memakai
+        innerHTML di beberapa tempat, sudah di-escape sejak ADR-0016).
+        CSP ketat DITUNDA: UI memakai inline <script> + onclick, jadi CSP
+        tanpa 'unsafe-inline' akan memecahkan UI; butuh ekstraksi JS dulu."""
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
 
     def send_json(self, data, status=200, extra_headers=None):
         response_bytes = json.dumps(data, indent=2, default=str).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(response_bytes)))
+        self._security_headers()
         for key, value in (extra_headers or {}).items():
             self.send_header(key, value)
         self.end_headers()
@@ -381,9 +443,30 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
         # "*" sebelumnya tidak berguna untuk cookie (browser menolak
         # credential dengan "*") dan hanya menambah permukaan.
         self.send_response(204)
+        self._security_headers()
         self.end_headers()
 
     def do_GET(self):
+        # Safety net (ADR-0019): exception yang lolos dari handler TIDAK
+        # boleh menutup koneksi tanpa respons (gejala probe [B] di review
+        # keamanan) — ubah menjadi 500 JSON. _BadRequest dari validasi
+        # input menjadi 400 JSON dengan pesan yang bisa ditampilkan UI.
+        try:
+            self._do_get_impl()
+        except _BadRequest as exc:
+            self._send_json_safe({"error": str(exc)}, status=400)
+        except Exception:
+            self._send_json_safe({"error": "Kesalahan internal server"}, status=500)
+
+    def _send_json_safe(self, data, status):
+        """Kirim respons JSON dari safety net — diam bila respons sudah
+        terlanjur terkirim sebagian (header sudah jalan)."""
+        try:
+            self.send_json(data, status=status)
+        except Exception:
+            pass
+
+    def _do_get_impl(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
@@ -398,6 +481,27 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_login_page()
             else:
                 self.serve_ui()
+            return
+
+        if path == "/api/health":
+            # Tanpa auth (ADR-0019): health check Vercel/monitoring.
+            # Sengaja tanpa versi/stack trace — hanya status DB +
+            # keberadaan SESSION_SECRET. 503 bila salah satunya gagal,
+            # supaya load balancer / uptime check bisa bereaksi.
+            try:
+                conn = get_db()
+                conn.execute("SELECT 1").fetchone()
+                conn.close()
+                db_ok = True
+            except Exception:
+                db_ok = False
+            secret_ok = bool(os.environ.get("SESSION_SECRET"))
+            ok = db_ok and secret_ok
+            self.send_json(
+                {"status": "ok" if ok else "degraded",
+                 "db": "ok" if db_ok else "error",
+                 "session_secret": "ok" if secret_ok else "missing"},
+                status=200 if ok else 503)
             return
 
         if path == "/api/me":
@@ -686,6 +790,15 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
         self.send_json({"error": "Endpoint tidak ditemukan"}, status=404)
 
     def do_POST(self):
+        # Safety net (ADR-0019) — lihat do_GET.
+        try:
+            self._do_post_impl()
+        except _BadRequest as exc:
+            self._send_json_safe({"error": str(exc)}, status=400)
+        except Exception:
+            self._send_json_safe({"error": "Kesalahan internal server"}, status=500)
+
+    def _do_post_impl(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         try:
@@ -696,15 +809,26 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
         if length > MAX_BODY_BYTES:
             self.send_json({"error": f"Body terlalu besar (maks {MAX_BODY_BYTES // 1024} KB)"}, status=413)
             return
-        body = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
+        # Body yang bukan JSON valid dulu DITELAN diam-diam (payload = {})
+        # lalu request jalan dengan nilai default — laytime tanpa body malah
+        # menyimpan tanggal demo sebagai fakta (ADR-0019). Kini 400 eksplisit.
+        try:
+            body = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
+        except UnicodeDecodeError:
+            self.send_json({"error": "Body harus berupa teks UTF-8 yang valid"}, status=400)
+            return
         try:
             payload = json.loads(body)
         except Exception:
-            payload = {}
+            self.send_json({"error": "Body harus berupa JSON valid"}, status=400)
+            return
+        if not isinstance(payload, dict):
+            self.send_json({"error": "Body JSON harus berupa objek"}, status=400)
+            return
 
         # -- Login (publik, rate-limited) ---------------------------------
         if path == "/api/login":
-            username = (payload.get("username") or "").strip()
+            username = _strip_or_empty(payload.get("username"))
             password = payload.get("password") or ""
             if not username or not password:
                 self.send_json({"error": "Username dan password wajib diisi"}, status=400)
@@ -766,10 +890,10 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
         actor, actor_role = session
 
         if path == "/api/master/vessels":
-            imo = (payload.get("imo") or "").strip()
-            name = (payload.get("name") or "").strip()
-            flag = (payload.get("flag") or "").strip()
-            vessel_type = (payload.get("vessel_type") or "").strip() or "General Cargo"
+            imo = _strip_or_empty(payload.get("imo"))
+            name = _strip_or_empty(payload.get("name"))
+            flag = _strip_or_empty(payload.get("flag"))
+            vessel_type = _strip_or_empty(payload.get("vessel_type")) or "General Cargo"
             if not imo or not name or not flag:
                 self.send_json({"error": "imo, name, dan flag wajib diisi"}, status=400)
                 return
@@ -934,6 +1058,11 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 conn.close()
                 self.send_json({"error": f"Kode pelabuhan '{port_code}' tidak terdaftar di sistem master! Pilih dari daftar baku."}, status=400)
                 return
+            # WHITELIST ONLY (ADR-0019): f-string di bawah HANYA
+            # menginterpolasi nama tabel/kolom dari tuple konstan di
+            # bawah ini — nilai dari payload/path TIDAK PERNAH masuk ke
+            # sana (nilai selalu lewat placeholder `?`). Jangan ubah pola
+            # ini: bila tabel/kolom baru ditambah, tambahkan ke tuple.
             for _table, _col, _val, _label in (
                 ("master_branches", "id", branch_id, "Cabang"),
                 ("master_principals", "id", principal_id, "Principal"),
@@ -1108,7 +1237,7 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     self.send_json({"error": "Resolusi sengketa hanya boleh dilakukan role FINANCE atau ADMIN"}, status=403)
                     return
                 new_status = payload.get("status")
-                resolution_notes = (payload.get("resolution_notes") or "").strip()
+                resolution_notes = _strip_or_empty(payload.get("resolution_notes"))
                 if new_status not in ("UNDER_REVIEW", "ACCEPTED_REVISED", "REJECTED_FINAL"):
                     self.send_json({"error": "status resolusi wajib salah satu dari: UNDER_REVIEW, ACCEPTED_REVISED, REJECTED_FINAL"}, status=400)
                     return
@@ -1161,9 +1290,15 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     self.send_json({"error": lock_msg}, status=400)
                     return
 
-                new_doc_number = doc_number.strip() if doc_number is not None else cl["doc_number"]
-                new_status = status if status is not None else cl["status"]
-                new_remarks = remarks.strip() if remarks is not None else cl["remarks"]
+                # Validasi (ADR-0019): status dinormalisasi + di-whitelist
+                # SEBELUM UPDATE — nilai di luar daftar dulu melempar
+                # IntegrityError (CHECK) dan menutup koneksi tanpa respons.
+                _doc = _opt_text(doc_number, "doc_number")
+                new_doc_number = _doc if _doc is not None else cl["doc_number"]
+                _st = _norm_enum(status, CLEARANCE_STATUSES, "status")
+                new_status = _st if _st is not None else cl["status"]
+                _rem = _opt_text(remarks, "remarks")
+                new_remarks = _rem if _rem is not None else cl["remarks"]
                 approval_time = cl["approval_time"]
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 if new_status == "APPROVED" and not approval_time:
@@ -1275,10 +1410,15 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             # POST /api/port-calls/<id>/milestone
             if len(parts) == 4 and parts[3] == "milestone":
                 pc_id = parts[2]
-                code = payload.get("milestone_code")
+                # Validasi (ADR-0019): kode wajib + di-whitelist — dulu
+                # milestone tanpa code melempar IntegrityError (NOT NULL)
+                # dan menutup koneksi; kode sembarang juga lolos ke SOF.
+                code = _norm_enum(payload.get("milestone_code"), MILESTONE_CODES, "milestone_code")
+                if code is None:
+                    raise _BadRequest("milestone_code wajib diisi — harus salah satu dari: " + ", ".join(MILESTONE_CODES))
                 event_time = payload.get("event_time", datetime.now().strftime("%Y-%m-%d %H:%M"))
                 recorded_by = actor  # dari session, bukan payload
-                remarks = payload.get("remarks", "")
+                remarks = _opt_text(payload.get("remarks"), "remarks") or ""
 
                 conn = get_db()
                 c = conn.cursor()
@@ -1454,7 +1594,7 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     self.send_json({"error": "Terbit SPB hanya boleh dilakukan role OPS atau ADMIN"}, status=403)
                     return
                 issue_time_str = payload.get("issued_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-                doc_number = payload.get("doc_number", "SPB-ONLINE-001")
+                doc_number = _opt_text(payload.get("doc_number"), "doc_number") or "SPB-ONLINE-001"
                 try:
                     issue_dt = parse_iso(issue_time_str)
                 except Exception:
@@ -1533,11 +1673,15 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             # POST /api/port-calls/<id>/clearance
             if len(parts) == 4 and parts[3] == "clearance":
                 pc_id = parts[2]
-                agency = payload.get("agency", "INAPORTNET_SIMPADU")
-                doc_type = payload.get("doc_type", "Dokumen Tambahan")
-                doc_number = (payload.get("doc_number") or "").strip()
-                status = payload.get("status", "APPROVED")
-                remarks = payload.get("remarks", "")
+                # Validasi (ADR-0019): agency/status dinormalisasi +
+                # di-whitelist SEBELUM INSERT — "POLISI" / "approved"
+                # huruf kecil dulu melempar IntegrityError (CHECK) dan
+                # menutup koneksi tanpa respons (probe [B] review).
+                agency = _norm_enum(payload.get("agency", "INAPORTNET_SIMPADU"), CLEARANCE_AGENCIES, "agency")
+                doc_type = _opt_text(payload.get("doc_type"), "doc_type") or "Dokumen Tambahan"
+                doc_number = _opt_text(payload.get("doc_number"), "doc_number") or ""
+                status = _norm_enum(payload.get("status", "APPROVED"), CLEARANCE_STATUSES, "status")
+                remarks = _opt_text(payload.get("remarks"), "remarks") or ""
                 
                 # ADR-0016: tidak ada berkas yang diunggah, jadi tidak ada
                 # hash berkas. Dulu server membuat hash dari string
@@ -1727,9 +1871,13 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     for r in c.fetchall()
                 ]
 
-                nor_str = payload.get("nor_tendered_time", "2026-11-01 08:00")
-                comm_str = payload.get("commenced_time", "2026-11-01 14:00")
-                comp_str = payload.get("completed_time", "2026-11-04 14:00")
+                # Validasi (ADR-0019): ketiga waktu WAJIB diisi — dulu
+                # ketiganya punya default tanggal demo (2026-11-01/04)
+                # sehingga laytime tanpa body malah 200 dan MENYIMPAN
+                # milestone demo sebagai fakta lapangan.
+                nor_str = _req_text(payload.get("nor_tendered_time"), "nor_tendered_time")
+                comm_str = _req_text(payload.get("commenced_time"), "commenced_time")
+                comp_str = _req_text(payload.get("completed_time"), "completed_time")
 
                 calc = LaytimeCalculator({
                     "cargo_quantity": pc["cargo_tonnage"] or 50000,
@@ -1939,7 +2087,7 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     # alasannya. Kini 400 JSON supaya UI bisa menjelaskannya.
                     self.send_json({"error": "Nilai sengketa harus angka (IDR)"}, status=400)
                     return
-                reason = payload.get("reason", "Keberatan tarif")
+                reason = _opt_text(payload.get("reason"), "reason") or "Keberatan tarif"
                 deadline = (datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d")
 
                 conn = get_db()
@@ -1983,10 +2131,12 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(content)))
+            self._security_headers()
             self.end_headers()
             self.wfile.write(content)
         else:
             self.send_response(404)
+            self._security_headers()
             self.end_headers()
             self.wfile.write(b"UI file not found")
 

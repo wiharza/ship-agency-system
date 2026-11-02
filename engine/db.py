@@ -179,7 +179,15 @@ def _resolve_db_file():
     dibuka untuk menulis, salin sekali ke /tmp per cold start dan gunakan
     salinan itu. (Konsekuensi: data yang ditulis bersifat per-instance dan
     hilang saat instance baru dibuat — wajar untuk demo/preview.)
+
+    Override untuk tes (ADR-0016): bila env AGENCY_DB_FILE terisi, pakai
+    path itu apa adanya — suite tes memakai DB sementara sehingga tidak
+    pernah menulis ke agency.db sungguhan. Harus dibaca di sini (saat
+    import), karena DB_FILE ditentukan sekali di tingkat modul.
     """
+    test_db = os.environ.get("AGENCY_DB_FILE", "").strip()
+    if test_db:
+        return os.path.abspath(test_db)
     bundled = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "agency.db"))
     try:
         # Probe tulis: bila agency.db belum ada, "ab" membuatnya (lokal:
@@ -616,15 +624,15 @@ def seed_sample_data():
             """)
             conn.execute("""
             INSERT INTO clearances (port_call_id, agency, doc_type, doc_number, submission_time, status, file_name, file_sha256, remarks, submitted_by) VALUES
-            ('PC-2026-JKT-0001', 'INAPORTNET_SIMPADU', 'PKKA / Pemberitahuan Kedatangan Kapal Asing', 'PPKKA-2026-10-881', ?, 'APPROVED', 'ppkka_mv_pacific.pdf', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', 'Izin trayek luar negeri disetujui', 'ops_agent_1'),
-            ('PC-2026-JKT-0001', 'BEA_CUKAI', 'RKSP / BC 1.0', 'RKSP-002198', ?, 'APPROVED', 'rksp_002198.pdf', '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08', 'Disetujui sistem CEISA', 'ops_agent_1'),
-            ('PC-2026-JKT-0001', 'BEA_CUKAI', 'Inward Manifest / BC 1.1', 'BC11-IN-7712', ?, 'APPROVED', 'bc11_in.pdf', '4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a', 'Pos pendaftaran terbit', 'ops_agent_1'),
-            ('PC-2026-JKT-0001', 'KARANTINA_KESEHATAN', 'MDH & Free Pratique', 'MDH-JKT-992', ?, 'APPROVED', 'free_pratique.pdf', 'ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d', 'SSCEC valid hingga 2027', 'ops_agent_1'),
-            ('PC-2026-JKT-0001', 'IMIGRASI', 'Immigration Crew List', 'IMM-CL-2026-441', ?, 'APPROVED', 'crew_list.pdf', 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90', 'Crew list + paspor diperiksa TPI', 'ops_agent_1'),
-            ('PC-2026-JKT-0001', 'BEA_CUKAI', 'Outward Manifest / BC 1.1', 'BC11-OUT-7713', ?, 'APPROVED', 'bc11_out.pdf', 'b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1', 'Manifes keluar diserahkan sebelum berlayar', 'ops_agent_1'),
-            ('PC-2026-JKT-0001', 'KARANTINA_KESEHATAN', 'Port Health Clearance Out', 'PHC-OUT-2026-118', ?, 'APPROVED', 'phc_out.pdf', 'c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2', 'Pemeriksaan karantina keberangkatan selesai', 'ops_agent_1'),
-            ('PC-2026-JKT-0001', 'INAPORTNET_SPS', 'Master Sailing Declaration', 'MSD-2026-552', ?, 'APPROVED', 'msd.pdf', 'd4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3', 'Ditandatangani nakhoda', 'ops_agent_1'),
-            ('PC-2026-JKT-0001', 'INAPORTNET_SPS', 'SPOG Keluar', 'SPOG-OUT-2026-337', ?, 'APPROVED', 'spog_out.pdf', 'e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4', 'Olah gerak keluar disetujui Syahbandar', 'ops_agent_1'),
+            ('PC-2026-JKT-0001', 'INAPORTNET_SIMPADU', 'PKKA / Pemberitahuan Kedatangan Kapal Asing', 'PPKKA-2026-10-881', ?, 'APPROVED', NULL, NULL, 'Izin trayek luar negeri disetujui', 'ops_agent_1'),
+            ('PC-2026-JKT-0001', 'BEA_CUKAI', 'RKSP / BC 1.0', 'RKSP-002198', ?, 'APPROVED', NULL, NULL, 'Disetujui sistem CEISA', 'ops_agent_1'),
+            ('PC-2026-JKT-0001', 'BEA_CUKAI', 'Inward Manifest / BC 1.1', 'BC11-IN-7712', ?, 'APPROVED', NULL, NULL, 'Pos pendaftaran terbit', 'ops_agent_1'),
+            ('PC-2026-JKT-0001', 'KARANTINA_KESEHATAN', 'MDH & Free Pratique', 'MDH-JKT-992', ?, 'APPROVED', NULL, NULL, 'SSCEC valid hingga 2027', 'ops_agent_1'),
+            ('PC-2026-JKT-0001', 'IMIGRASI', 'Immigration Crew List', 'IMM-CL-2026-441', ?, 'APPROVED', NULL, NULL, 'Crew list + paspor diperiksa TPI', 'ops_agent_1'),
+            ('PC-2026-JKT-0001', 'BEA_CUKAI', 'Outward Manifest / BC 1.1', 'BC11-OUT-7713', ?, 'APPROVED', NULL, NULL, 'Manifes keluar diserahkan sebelum berlayar', 'ops_agent_1'),
+            ('PC-2026-JKT-0001', 'KARANTINA_KESEHATAN', 'Port Health Clearance Out', 'PHC-OUT-2026-118', ?, 'APPROVED', NULL, NULL, 'Pemeriksaan karantina keberangkatan selesai', 'ops_agent_1'),
+            ('PC-2026-JKT-0001', 'INAPORTNET_SPS', 'Master Sailing Declaration', 'MSD-2026-552', ?, 'APPROVED', NULL, NULL, 'Ditandatangani nakhoda', 'ops_agent_1'),
+            ('PC-2026-JKT-0001', 'INAPORTNET_SPS', 'SPOG Keluar', 'SPOG-OUT-2026-337', ?, 'APPROVED', NULL, NULL, 'Olah gerak keluar disetujui Syahbandar', 'ops_agent_1'),
             ('PC-2026-JKT-0001', 'INAPORTNET_SPS', 'SPB (Surat Persetujuan Berlayar)', NULL, NULL, 'PENDING', NULL, NULL, 'Belum diterbitkan (kapal belum sandar)', NULL)
             """, (now_str, now_str, now_str, now_str, now_str, now_str, now_str, now_str, now_str))
             conn.execute("""
@@ -742,5 +750,12 @@ def log_audit(conn, port_call_id, user_id, action, old_value=None, new_value=Non
 
 
 def calculate_file_sha256(content_bytes: bytes) -> str:
-    """Menghasilkan hash SHA-256 untuk pembuktian integritas berkas (Putusan Q18)."""
+    """Menghasilkan hash SHA-256 dari ISI BERKAS yang sesungguhnya.
+
+    ADR-0016: fungsi ini HANYA bermakna bila dipanggil dengan bytes berkas
+    yang benar-benar diunggah. Jangan pernah memanggilnya dengan string
+    referensi yang dibuat-buat (mis. "port_call_id-doc_type-doc_number") —
+    hash seperti itu bukan bukti integritas apa pun. Saat ini tidak ada
+    fitur upload berkas, jadi tidak ada pemanggilnya; fungsi ini disimpan
+    untuk upload berkas di masa depan (lihat Q18 yang dikoreksi Q49)."""
     return hashlib.sha256(content_bytes).hexdigest()

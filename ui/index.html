@@ -229,7 +229,7 @@
                 <th>Jenis Dokumen</th>
                 <th>Nomor Dokumen</th>
                 <th>Status</th>
-                <th>Hash Integritas (SHA-256)</th>
+                <th>Sidik jari (SHA-256)</th>
                 <th style="width: 80px; text-align: center;">Aksi</th>
               </tr>
             </thead>
@@ -517,7 +517,7 @@
           <td>${esc(cl.doc_type)}</td>
           <td>${cl.doc_number ? esc(cl.doc_number) : '<span style="color:var(--yellow)">Belum Terbit</span>'}</td>
           <td><span class="badge ${badgeClass}">${esc(cl.status)}</span></td>
-          <td class="mono" title="${esc(cl.file_sha256 || '')}">${cl.file_sha256 ? esc(cl.file_sha256.substring(0, 16)) + '...' : '-'}</td>
+          <td class="mono" title="${cl.file_sha256 ? 'Sidik jari referensi — bukan bukti isi berkas (sistem belum menyimpan berkas)' : ''}">${cl.file_sha256 ? esc(cl.file_sha256.substring(0, 16)) + '...' : 'Tidak ada berkas'}</td>
           <td style="text-align: center;"><button class="btn btn-outline" style="padding: 2px 8px; font-size: 11px;" onclick="openEditClearanceModal(${cl.id})">Edit</button></td>
         `;
         clTable.appendChild(tr);
@@ -667,12 +667,14 @@
         <div style="font-size: 18px; font-weight: 800; margin-bottom: 8px; color: ${isDemurrage ? '#f87171' : '#34d399'};">
           STATUS: ${data.result.claim_type} — $${Number(data.result.amount_usd).toLocaleString()} USD
         </div>
+        <p><strong>Ketentuan (terms):</strong> ${esc(data.terms || 'SHINC')}${data.terms === 'SHEX' ? ` — ${data.sundays_excluded.count} hari Minggu dikecualikan (${esc(data.laytime_used.sundays_excluded_formatted)})` : ''}</p>
         <p><strong>Laytime Diizinkan (Allowed):</strong> ${data.laytime_allowed.formatted} (${data.laytime_allowed.days_decimal} hari)</p>
         <p><strong>Laytime Faktual Terpakai (Net Used):</strong> ${data.laytime_used.net_formatted}</p>
         <p><strong>Deduksi Jeda Operasional (Cuaca/Jeda):</strong> ${data.laytime_used.deducted_formatted}</p>
         <p><strong>Selisih Waktu Komersial:</strong> ${data.result.difference_formatted} (${data.result.difference_days} hari)</p>
         <div style="margin-top: 10px; font-size: 11px; color: var(--text-muted);">
           Kalkulasi diverifikasi deterministik dengan Python stdlib tanpa deviasi floating point.
+          ${data.terms === 'SHEX' ? 'Hari libur tidak dikecualikan otomatis (sistem tidak punya kalender libur) — catat sebagai jeda SOF kategori Lainnya dengan keterangan "Libur: ...".' : ''}
         </div>
       `;
     }

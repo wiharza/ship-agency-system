@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from email.message import Message as WSGIHeaders
 
-from engine.db import get_db, init_db, seed_sample_data, log_audit, drop_remote_connection, TABLES
+from engine.db import get_db, init_db, seed_sample_data, log_audit, drop_remote_connection, TABLES, _upgrade_clearances_void
 from engine.auth import (
     SESSION_COOKIE_NAME, SESSION_TTL_SECONDS,
     get_session_secret, make_session_cookie, verify_session_cookie,
@@ -95,7 +95,11 @@ def _approved(rows, category):
 
 
 def _exists(rows, category):
-    return any(_matches(r["doc_type"], r["agency"], category) for r in rows)
+    # ADR-0020: baris VOID (batal karena salah input) dianggap TIDAK ADA
+    # — kalau tidak, satu baris bersyarat yang salah ketik lalu di-void
+    # tetap memblokir SPB ("ada tapi belum APPROVED") dan tidak ada jalan
+    # keluar selain menyetujui baris yang salah itu.
+    return any(_matches(r["doc_type"], r["agency"], category) and r["status"] != "VOID" for r in rows)
 
 
 def clearance_spb_gate(clearances):
@@ -180,16 +184,26 @@ def build_clearance_checklist(pc, clearances):
     items = []
     for phase, cat, label, agency, deadline, basis in specs:
         matched = [r for r in clearances if _matches(r["doc_type"], r["agency"], cat)]
-        if matched:
-            approved = [r for r in matched if r["status"] == "APPROVED"]
-            chosen = approved[0] if approved else matched[0]
+        # ADR-0020: VOID (batal karena salah input) bukan dokumen hidup.
+        # Bila yang tersisa hanya baris void, tampilkan VOID apa adanya —
+        # jangan jatuhkan ke "BELUM ADA" (itu menyembunyikan riwayat) dan
+        # jangan tandai overdue (tidak ada yang menunggu persetujuan;
+        # yang menunggu adalah baris pengganti).
+        live = [r for r in matched if r["status"] != "VOID"]
+        if live:
+            approved = [r for r in live if r["status"] == "APPROVED"]
+            chosen = approved[0] if approved else live[0]
             status = chosen["status"]
             doc_number = chosen["doc_number"]
             clearance_id = chosen["id"]
+        elif matched:
+            status = "VOID"
+            doc_number = matched[0]["doc_number"]
+            clearance_id = matched[0]["id"]
         else:
             status, doc_number, clearance_id = "BELUM ADA", None, None
-        overdue = bool(deadline and now > deadline and status != "APPROVED")
-        due_soon = bool(deadline and status != "APPROVED" and not overdue
+        overdue = bool(deadline and now > deadline and status not in ("APPROVED", "VOID"))
+        due_soon = bool(deadline and status not in ("APPROVED", "VOID") and not overdue
                         and (deadline - now) <= timedelta(hours=4))
         items.append({
             "phase": phase, "category": cat, "doc_type": label, "agency": agency,
@@ -250,7 +264,7 @@ def _closed_lock_message(pc):
 class _BadRequest(Exception):
     """Validasi input gagal — safety net mengubahnya menjadi 400 JSON."""
 
-CLEARANCE_STATUSES = ("PENDING", "SUBMITTED", "APPROVED", "REJECTED", "EXPIRED")
+CLEARANCE_STATUSES = ("PENDING", "SUBMITTED", "APPROVED", "REJECTED", "EXPIRED", "VOID")
 CLEARANCE_AGENCIES = ("INAPORTNET_SIMPADU", "INAPORTNET_SPS", "BEA_CUKAI", "IMIGRASI", "KARANTINA_KESEHATAN", "BARANTIN", "BUP_PELINDO")
 MILESTONE_CODES = ("EOSP", "ANCHORED", "NOR_TENDERED", "FREE_PRATIQUE", "PILOT_ON_BOARD", "FIRST_LINE", "ALL_FAST", "COMMENCED_CARGO", "COMPLETED_CARGO", "CAST_OFF", "SAILED")
 
@@ -771,7 +785,7 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     return
 
                 # Pending clearances
-                c.execute("SELECT doc_type, agency FROM clearances WHERE port_call_id = ? AND status != 'APPROVED'", (pc_id,))
+                c.execute("SELECT doc_type, agency FROM clearances WHERE port_call_id = ? AND status != 'APPROVED' AND status != 'VOID'", (pc_id,))
                 pending_docs = [f"{r['doc_type']} ({r['agency']})" for r in c.fetchall()]
 
                 # Latest milestone
@@ -1317,6 +1331,13 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     conn.close()
                     self.send_json({"error": lock_msg}, status=400)
                     return
+                # ADR-0020: baris VOID sudah mati — final, tidak bisa
+                # diubah lagi (termasuk "menghidupkannya" kembali).
+                # Koreksi = tambah baris baru; riwayat void tetap ada.
+                if cl["status"] == "VOID":
+                    conn.close()
+                    self.send_json({"error": "Dokumen sudah VOID (batal karena salah input) — tidak bisa diubah lagi; tambah baris baru bila perlu"}, status=400)
+                    return
 
                 # Validasi (ADR-0019): status dinormalisasi + di-whitelist
                 # SEBELUM UPDATE — nilai di luar daftar dulu melempar
@@ -1327,6 +1348,12 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 new_status = _st if _st is not None else cl["status"]
                 _rem = _opt_text(remarks, "remarks")
                 new_remarks = _rem if _rem is not None else cl["remarks"]
+                # ADR-0020: mem-void hanya OPS/ADMIN — ini tindakan yang
+                # menghapus blocker gate, jadi tidak untuk FINANCE.
+                if new_status == "VOID" and actor_role not in ("OPS", "ADMIN"):
+                    conn.close()
+                    self.send_json({"error": "Hanya OPS/ADMIN yang boleh mem-void (membatalkan) dokumen"}, status=403)
+                    return
                 approval_time = cl["approval_time"]
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 if new_status == "APPROVED" and not approval_time:
@@ -1353,7 +1380,9 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                               f"{cl['doc_type']} [{cl['status']}] {cl['doc_number'] or ''}",
                               f"{cl['doc_type']} [{new_status}] {new_doc_number or ''}")
                 conn.close()
-                self.send_json({"status": "success", "message": "Dokumen clearance berhasil diperbarui", "file_sha256": file_sha256})
+                _msg = ("Dokumen di-VOID (batal) — baris tetap tersimpan sebagai riwayat dan diabaikan gate SPB"
+                        if new_status == "VOID" else "Dokumen clearance berhasil diperbarui")
+                self.send_json({"status": "success", "message": _msg, "file_sha256": file_sha256})
                 return
 
         if path.startswith("/api/port-calls/"):
@@ -1710,6 +1739,12 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 doc_number = _opt_text(payload.get("doc_number"), "doc_number") or ""
                 status = _norm_enum(payload.get("status", "APPROVED"), CLEARANCE_STATUSES, "status")
                 remarks = _opt_text(payload.get("remarks"), "remarks") or ""
+                # ADR-0020: baris baru tidak bisa langsung VOID — VOID
+                # hanya untuk membatalkan baris yang sudah ada (salah
+                # input). Buat dulu, lalu void bila salah pilih tipe.
+                if status == "VOID":
+                    self.send_json({"error": "Baris baru tidak bisa langsung VOID — buat dulu, lalu void bila salah input"}, status=400)
+                    return
                 
                 # ADR-0016: tidak ada berkas yang diunggah, jadi tidak ada
                 # hash berkas. Dulu server membuat hash dari string
@@ -2299,6 +2334,10 @@ def _prepare_database_once():
             "SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
         if not set(TABLES).issubset(have):
             init_db()
+        # ADR-0020: DB lama yang CHECK status clearances-nya belum
+        # mengenal VOID dinaikkan (rebuild tabel, data utuh). No-op bila
+        # skema sudah baru — sama seperti pola self-heal ADR-0018.
+        _upgrade_clearances_void(conn)
     finally:
         conn.close()
 

@@ -338,6 +338,7 @@ lokal, tanpa query DB per request).
   CSP ketat ditunda (UI memakai inline script/onclick). Kredensial
   default sengaja tidak diblokir selama uji coba — wajib diganti sebelum
   data real masuk.
+- **Status VOID clearance (ADR-0020):** dokumen salah input dibatalkan dengan status VOID — baris tetap tersimpan sebagai riwayat, gate SPB + handover + papan shift mengabaikannya; baris wajib yang di-void tetap memblokir sampai ada baris baru yang APPROVED; VOID final dan hanya OPS/ADMIN; CHECK status dinaikkan lewat rebuild tabel (`scripts/migrasi-adr-0020.sql` + self-heal di cold start/init_db).
 - **Hash berkas:** kolom `file_sha256`/`file_name` hanya terisi bila ada
   berkas yang benar-benar diunggah (fitur upload belum ada); hash yang dulu
   ditampilkan adalah hash string referensi, bukan bukti berkas, dan sudah

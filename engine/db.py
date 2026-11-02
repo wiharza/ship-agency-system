@@ -212,6 +212,21 @@ def _resolve_db_file():
 DB_FILE = _resolve_db_file()
 
 
+def _local_db_path():
+    """Path SQLite lokal untuk koneksi ini.
+
+    ADR-0020: override AGENCY_DB_FILE dibaca di TIAP panggilan, bukan
+    hanya sekali saat import (DB_FILE). Alasan: Tes 34 menukar env di
+    tengah suite dengan asumsi DB ikut berpindah — ternyata tidak, karena
+    DB_FILE ditentukan sekali di tingkat modul; tes itu selama ini
+    diam-diam beroperasi di DB utama (DROP dua tabel lalu dibuat lagi)
+    dan lolos hanya karena urutan tes. Tanpa ini, Tes 38 tidak bisa
+    memakai file legacy sungguhan untuk membuktikan migrasi CHECK.
+    Produksi tidak berubah: tanpa env, jalurnya sama dengan DB_FILE."""
+    test_db = os.environ.get("AGENCY_DB_FILE", "").strip()
+    return os.path.abspath(test_db) if test_db else DB_FILE
+
+
 # Koneksi Turso remote di-cache per thread (threading.local), bukan dibuka
 # baru di tiap get_db(). Alasannya: sekali libsql.connect() ke Turso remote
 # butuh ~1,5 dtk (hangat) sampai ~7 dtk (dingin) dari VM ini, dan tiap
@@ -295,7 +310,7 @@ def get_db():
         raise RuntimeError(
             "TURSO_DATABASE_URL terisi tapi paket 'libsql' belum terinstal "
             "(pip install -r requirements.txt)")
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(_local_db_path())
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     # ADR-0016: server lokal kini multi-thread (ADR-0013) — dua thread yang
@@ -306,6 +321,31 @@ def get_db():
     conn.execute("PRAGMA busy_timeout = 5000")
     conn.execute("PRAGMA journal_mode = WAL")
     return conn
+
+
+# DDL tabel clearances (ADR-0020): dipakai init_db() DAN migrasi
+# _upgrade_clearances_void() supaya definisi baru tidak ditulis dua kali
+# dan tidak bisa menyimpang. CHECK status mengenal 'VOID' (batal karena
+# salah input): baris tetap tersimpan sebagai riwayat, gate SPB dan
+# daftar dokumen tertunda mengabaikannya.
+CLEARANCES_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS clearances (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    port_call_id TEXT NOT NULL,
+    agency TEXT NOT NULL CHECK(agency IN ('INAPORTNET_SIMPADU', 'INAPORTNET_SPS', 'BEA_CUKAI', 'IMIGRASI', 'KARANTINA_KESEHATAN', 'BARANTIN', 'BUP_PELINDO')),
+    doc_type TEXT NOT NULL,
+    doc_number TEXT,
+    submission_time TEXT,
+    approval_time TEXT,
+    expiry_time TEXT,
+    status TEXT NOT NULL CHECK(status IN ('PENDING', 'SUBMITTED', 'APPROVED', 'REJECTED', 'EXPIRED', 'VOID')),
+    file_name TEXT,
+    file_sha256 TEXT,
+    remarks TEXT,
+    submitted_by TEXT,
+    FOREIGN KEY (port_call_id) REFERENCES port_calls (id)
+)
+"""
 
 
 def init_db():
@@ -423,24 +463,7 @@ def init_db():
         """)
 
         # Dokumen Perizinan CIGP & Inaportnet
-        conn.execute("""
-        CREATE TABLE IF NOT EXISTS clearances (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            port_call_id TEXT NOT NULL,
-            agency TEXT NOT NULL CHECK(agency IN ('INAPORTNET_SIMPADU', 'INAPORTNET_SPS', 'BEA_CUKAI', 'IMIGRASI', 'KARANTINA_KESEHATAN', 'BARANTIN', 'BUP_PELINDO')),
-            doc_type TEXT NOT NULL,
-            doc_number TEXT,
-            submission_time TEXT,
-            approval_time TEXT,
-            expiry_time TEXT,
-            status TEXT NOT NULL CHECK(status IN ('PENDING', 'SUBMITTED', 'APPROVED', 'REJECTED', 'EXPIRED')),
-            file_name TEXT,
-            file_sha256 TEXT,
-            remarks TEXT,
-            submitted_by TEXT,
-            FOREIGN KEY (port_call_id) REFERENCES port_calls (id)
-        )
-        """)
+        conn.execute(CLEARANCES_CREATE_SQL)
 
         # Tonggak Waktu Lapangan (Milestones)
         conn.execute("""
@@ -570,7 +593,39 @@ def init_db():
         )
         """)
 
+    # ADR-0020: DB lama (skema sebelum VOID) ikut naik — lihat di bawah.
+    _upgrade_clearances_void(conn)
     conn.close()
+
+
+def _upgrade_clearances_void(conn):
+    """Naikkan CHECK status clearances di DB lama supaya mengenal 'VOID'.
+
+    SQLite tidak bisa mengubah CHECK lewat ALTER TABLE; satu-satunya
+    cara adalah membangun ulang tabel (pola resmi SQLite: RENAME ->
+    CREATE -> INSERT SELECT -> DROP). Aman di sini karena: (1) tidak ada
+    tabel lain yang mereferensikan clearances (hanya clearances yang
+    mereferensikan port_calls), (2) tidak ada indeks/trigger di
+    clearances, (3) INSERT SELECT menyalin SEMUA kolom termasuk id —
+    AUTOINCREMENT mengikuti max(id) sehingga nomor urut tidak
+    berulang, (4) satu transaksi: gagal di tengah -> rollback utuh.
+    Bila tabel belum ada (DB baru) atau CHECK sudah mengenal VOID,
+    fungsi ini no-op. Dipanggil init_db() (server lokal + tes) dan
+    _prepare_database_once() (cold start Vercel) — pola self-heal yang
+    sama seperti ADR-0018 untuk tabel baru."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'clearances'"
+    ).fetchone()
+    if row is None:
+        return  # tabel belum ada; init_db() membuatnya dengan CHECK baru
+    if "'VOID'" in (row[0] or ""):
+        return  # CHECK sudah mengenal VOID
+    with conn:
+        conn.execute("DROP TABLE IF EXISTS clearances_old_void_mig")
+        conn.execute("ALTER TABLE clearances RENAME TO clearances_old_void_mig")
+        conn.execute(CLEARANCES_CREATE_SQL)
+        conn.execute("INSERT INTO clearances SELECT * FROM clearances_old_void_mig")
+        conn.execute("DROP TABLE clearances_old_void_mig")
 
 
 def seed_sample_data():

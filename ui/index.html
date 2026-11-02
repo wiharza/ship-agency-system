@@ -422,6 +422,7 @@
                 <th>Rincian Pos Biaya</th>
                 <th>Estimasi PDA (IDR)</th>
                 <th>Realisasi FDA (IDR)</th>
+                <th>Selisih FDA − PDA (IDR)</th>
                 <th>No Billing SIMPONI / NTPN</th>
                 <th>Aksi</th>
               </tr>
@@ -720,22 +721,49 @@
         stpTable.appendChild(tr);
       });
 
-      // Render Finance
+      // Render Finance — matriks selisih (variance analysis, ADR-0023):
+      // kolom Selisih = FDA − PDA per pos + baris TOTAL. Pos yang FDA-nya
+      // masih 0 padahal PDA > 0 dianggap BELUM diisi (bukan selisih 0) —
+      // mengikuti aturan close-finance yang sama (FDA 0 pada baris
+      // berp-PDA memblokir). Total selisih = total FDA − total PDA.
       const finTable = document.getElementById('finance-table-body');
       finTable.innerHTML = '';
+      let totPda = 0, totFda = 0, unfilled = 0;
       (currentData.disbursements || []).forEach(d => {
+        const pda = Number(d.pda_estimate) || 0;
+        const fda = Number(d.fda_actual) || 0;
+        totPda += pda; totFda += fda;
+        const filled = !(fda === 0 && pda > 0);
+        if (!filled) unfilled++;
+        const diff = fda - pda;
+        const diffCell = !filled ? '<span style="color: var(--text-muted);">Belum diisi</span>'
+          : diff > 0 ? `<span style="color:#f87171;">Rp +${diff.toLocaleString('id-ID')}</span>`
+          : diff < 0 ? `<span style="color:#34d399;">Rp ${diff.toLocaleString('id-ID')}</span>`
+          : '<span style="color: var(--text-muted);">Rp 0</span>';
         const tr = document.createElement('tr');
         tr.innerHTML = `
           <td><span class="badge badge-cyan">${esc(d.category)}</span></td>
           <td>${esc(d.item_name)}</td>
-          <td>Rp ${Number(d.pda_estimate).toLocaleString('id-ID')}</td>
-          <td>Rp ${Number(d.fda_actual).toLocaleString('id-ID')}</td>
+          <td>Rp ${pda.toLocaleString('id-ID')}</td>
+          <td>Rp ${fda.toLocaleString('id-ID')}</td>
+          <td>${diffCell}</td>
           <td>${d.ntpn ? 'NTPN: ' + esc(d.ntpn) : (d.simponi_billing ? 'Bill: ' + esc(d.simponi_billing) : '-')}</td>
           <td style="white-space: nowrap;"><button class="btn btn-outline" style="padding:2px 8px; font-size:11px;" onclick="openEditDisbursementModal(${d.id})">Lengkapi FDA</button>
           <button class="btn btn-outline" style="padding:2px 8px; font-size:11px;" onclick="openDisputeModal(${d.id})">Ajukan Sengketa</button></td>
         `;
         finTable.appendChild(tr);
       });
+      const totDiff = totFda - totPda;
+      const totRow = document.createElement('tr');
+      totRow.style.cssText = 'font-weight: bold; border-top: 2px solid var(--border);';
+      totRow.innerHTML = `
+        <td colspan="2">TOTAL</td>
+        <td>Rp ${totPda.toLocaleString('id-ID')}</td>
+        <td>Rp ${totFda.toLocaleString('id-ID')}</td>
+        <td style="color:${totDiff > 0 ? '#f87171' : (totDiff < 0 ? '#34d399' : 'inherit')};">Rp ${totDiff > 0 ? '+' : ''}${totDiff.toLocaleString('id-ID')}</td>
+        <td colspan="2" style="font-weight: normal; font-size: 11px; color: var(--text-muted);">${unfilled ? `* ${unfilled} pos FDA belum diisi — total FDA & selisih belum final` : 'Semua pos FDA sudah terisi'}</td>
+      `;
+      finTable.appendChild(totRow);
 
       // Render Disputes
       const dTable = document.getElementById('disputes-table-body');

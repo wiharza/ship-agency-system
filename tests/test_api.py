@@ -1144,7 +1144,7 @@ def test_integration():
             _prepare_database_once()
         finally:
             os.environ["AGENCY_DB_FILE"] = old_db_file
-        print("[TEST 34/38] ADR-0018: cold start melengkapi tabel baru di DB lama tanpa menyentuh data.")
+        print("[TEST 34/39] ADR-0018: cold start melengkapi tabel baru di DB lama tanpa menyentuh data.")
         # 35. Test Validasi Input (ADR-0019): whitelist + normalisasi
         #     clearance, milestone_code wajib, laytime wajib 3 waktu,
         #     JSON rusak -> 400 (bukan koneksi putus / data demo tersimpan).
@@ -1212,7 +1212,7 @@ def test_integration():
         _expect_raw_400("/api/login", b"[1, 2, 3]", "Body JSON harus berupa objek")
         with urllib.request.urlopen(f"{base_url}/api/port-calls") as res:
             assert res.status == 200, "Server harus tetap hidup setelah body rusak"
-        print("[TEST 35/38] ADR-0019: validasi whitelist/normalisasi clearance+milestone, laytime wajib 3 waktu, JSON rusak 400.")
+        print("[TEST 35/39] ADR-0019: validasi whitelist/normalisasi clearance+milestone, laytime wajib 3 waktu, JSON rusak 400.")
 
         # 36. Test Security Headers + /api/health (ADR-0019).
         anon_opener = urllib.request.build_opener()  # tanpa cookie
@@ -1229,7 +1229,7 @@ def test_integration():
             assert res.headers.get("X-Frame-Options") == "DENY"
         with anon_opener.open(f"{base_url}/") as res:
             assert res.headers.get("X-Content-Type-Options") == "nosniff", "Halaman login juga harus membawa security headers"
-        print("[TEST 36/38] ADR-0019: /api/health tanpa auth + security headers di API, UI, dan halaman login.")
+        print("[TEST 36/39] ADR-0019: /api/health tanpa auth + security headers di API, UI, dan halaman login.")
 
         # 37. Status VOID (ADR-0020): baris salah input dibatalkan — tetap
         #     tersimpan sebagai riwayat, gate SPB + daftar tertunda
@@ -1310,7 +1310,7 @@ def test_integration():
             det37 = json.loads(res.read().decode("utf-8"))
         voided = [c for c in det37["clearances"] if c["status"] == "VOID"]
         assert len(voided) == 2, f"Harus ada 2 baris VOID sebagai riwayat, dapat {len(voided)}"
-        print("[TEST 37/38] ADR-0020: VOID membatalkan salah input — gate abaikan baris void bersyarat, wajib tetap blokir, VOID final + OPS/ADMIN.")
+        print("[TEST 37/39] ADR-0020: VOID membatalkan salah input — gate abaikan baris void bersyarat, wajib tetap blokir, VOID final + OPS/ADMIN.")
 
         # 38. Migrasi CHECK VOID (ADR-0020): DB lama yang CHECK status-nya
         #     belum mengenal VOID dinaikkan (rebuild tabel) tanpa menyentuh
@@ -1387,7 +1387,54 @@ def test_integration():
             c2.close()
         finally:
             os.environ["AGENCY_DB_FILE"] = old_db_file
-        print("[TEST 38/38] ADR-0020: migrasi CHECK VOID (cold start + init_db) tanpa mengubah data; VOID bisa disimpan; idempotent.")
+        print("[TEST 38/39] ADR-0020: migrasi CHECK VOID (cold start + init_db) tanpa mengubah data; VOID bisa disimpan; idempotent.")
+
+        # 39. Tambah pelabuhan master (ADR-0021): endpoint + validasi.
+        # Kode huruf kecil -> dinormalisasi jadi IDBLW; duplikat -> 400;
+        # kode bukan 5 karakter / bukan alfanumerik -> 400; nama/provinsi
+        # kosong -> 400; level tak dikenal -> 400; level huruf kecil ->
+        # disimpan bentuk kanonik; max_draft negatif -> 400.
+        with urllib.request.urlopen(_post("/api/master/ports",
+                {"code": "idblw", "name": "Belawan", "province": "Sumatera Utara",
+                 "inaportnet_level": "kelas i", "vts_channel": "VHF Ch 16",
+                 "max_draft": 12.0, "notes": "Pelabuhan utama Medan"})) as res:
+            assert res.status == 200
+            assert json.loads(res.read().decode("utf-8"))["code"] == "IDBLW"
+        with urllib.request.urlopen(f"{base_url}/api/master/ports") as res:
+            ports = json.loads(res.read().decode("utf-8"))["ports"]
+        blw = next(p for p in ports if p["code"] == "IDBLW")
+        assert blw["name"] == "Belawan" and blw["province"] == "Sumatera Utara", f"Belawan harus tersimpan lengkap, dapat {blw}"
+        assert blw["unlocode"] == "IDBLW", "unlocode default harus = code"
+        assert blw["inaportnet_level"] == "Kelas I", f"level harus kanonik 'Kelas I', dapat {blw['inaportnet_level']}"
+        assert blw["max_draft"] == 12.0
+        # Terminal untuk pelabuhan baru ikut tampil di master data.
+        with urllib.request.urlopen(_post("/api/master/terminals",
+                {"port_code": "IDBLW", "terminal_name": "Terminal Petikemas Belawan", "terminal_type": "PETIKEMAS"})) as res:
+            assert res.status == 200
+        with urllib.request.urlopen(f"{base_url}/api/master/ports") as res:
+            ports = json.loads(res.read().decode("utf-8"))["ports"]
+        blw = next(p for p in ports if p["code"] == "IDBLW")
+        assert any(t["name"] == "Terminal Petikemas Belawan" for t in blw["terminals"]), "Terminal baru harus tampil di bawah IDBLW"
+        # Penolakan: duplikat, kode salah, field wajib kosong, level salah, draft negatif.
+        _expect_400("/api/master/ports",
+                    {"code": "IDBLW", "name": "Belawan Lagi", "province": "Sumatera Utara", "inaportnet_level": "Kelas I"},
+                    "sudah terdaftar")
+        _expect_400("/api/master/ports",
+                    {"code": "IDB", "name": "Pendek", "province": "Sumatera Utara", "inaportnet_level": "Kelas I"},
+                    "5 karakter")
+        _expect_400("/api/master/ports",
+                    {"code": "IDB!W", "name": "Simbol", "province": "Sumatera Utara", "inaportnet_level": "Kelas I"},
+                    "5 karakter")
+        _expect_400("/api/master/ports",
+                    {"code": "IDSBY", "name": "", "province": "Jawa Timur", "inaportnet_level": "Kelas I"},
+                    "name")
+        _expect_400("/api/master/ports",
+                    {"code": "IDSBY", "name": "Surabaya", "province": "Jawa Timur", "inaportnet_level": "Kelas X"},
+                    "inaportnet_level")
+        _expect_400("/api/master/ports",
+                    {"code": "IDSBY", "name": "Surabaya", "province": "Jawa Timur", "inaportnet_level": "Kelas I", "max_draft": -1},
+                    "tidak boleh negatif")
+        print("[TEST 39/39] ADR-0021: tambah pelabuhan master (normalisasi kode+level, duplikat/kode/level/draft ditolak, terminal ikut tampil).")
 
         print("\nSEMUA INTEGRATION TEST LULUS (100% VERIFIED)!")
 

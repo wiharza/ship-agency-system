@@ -339,6 +339,8 @@ lokal, tanpa query DB per request).
   default sengaja tidak diblokir selama uji coba — wajib diganti sebelum
   data real masuk.
 - **Status VOID clearance (ADR-0020):** dokumen salah input dibatalkan dengan status VOID — baris tetap tersimpan sebagai riwayat, gate SPB + handover + papan shift mengabaikannya; baris wajib yang di-void tetap memblokir sampai ada baris baru yang APPROVED; VOID final dan hanya OPS/ADMIN; CHECK status dinaikkan lewat rebuild tabel (`scripts/migrasi-adr-0020.sql` + self-heal di cold start/init_db).
+- **Tambah pelabuhan master (ADR-0021):** `POST /api/master/ports` + modal Tambah Pelabuhan di UI — kode UN/LOCODE 5 karakter dinormalisasi, level Inaportnet di-whitelist dan disimpan kanonik, duplikat ditolak 400. Sebelumnya pelabuhan hanya bisa ditambah langsung di database.
+
 - **Hash berkas:** kolom `file_sha256`/`file_name` hanya terisi bila ada
   berkas yang benar-benar diunggah (fitur upload belum ada); hash yang dulu
   ditampilkan adalah hash string referensi, bukan bukti berkas, dan sudah

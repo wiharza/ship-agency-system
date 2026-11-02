@@ -302,6 +302,20 @@ lokal, tanpa query DB per request).
   sampai kanal resmi tersedia (ADR-0004).
 - **Tidak ada notifikasi** email/Telegram, tidak ada pengingat tenggat
   otomatis (tenggat hanya dihitung & ditampilkan saat checklist dibuka).
+  Pengganti untuk tim kecil: **papan shift** di atas daftar port call
+  (dokumen lewat tenggat, SPB sisa < 6 jam, sandar tapi SPB belum
+  diterbitkan, sengketa OPEN) — ADR-0017.
+- **Status hanya maju, arsip terkunci (ADR-0017):** milestone tidak lagi
+  menarik status kapal mundur (PRE_ARRIVAL → ARRIVED → BERTHED →
+  DEPARTED); setelah `CLOSED`, milestone/dokumen/biaya/SPB tidak bisa
+  diubah (kecuali finance menyelesaikan sengketa yang sudah terbuka).
+  SPB yang masih berlaku tidak bisa diterbitkan ulang; nomor lama
+  tersimpan di riwayat SPB.
+- **Laytime tersimpan (ADR-0017):** parameter charter party diisi dari
+  recap fixture (bukan angka tetap); hitung laytime menyimpan NOR,
+  mulai, dan selesai muat sebagai milestone + hasil terakhir, sehingga
+  handover shift membawanya. Koreksi ETA/ETD/muatan menghitung ulang
+  tenggat RKSP (ETA−24 jam) dan permohonan SPB (ETD−4 jam).
 - Data master contoh (kapal/principal/cabang) dan nomor dokumen contoh di
   seed **harus diganti** dengan data asli perusahaan sebelum dipakai produksi.
 - Akun portal resmi (Inaportnet, INSW, CEISA, Simkapel, SINKARKES) tetap

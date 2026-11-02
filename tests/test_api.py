@@ -1137,7 +1137,92 @@ def test_integration():
             _prepare_database_once()
         finally:
             os.environ["AGENCY_DB_FILE"] = old_db_file
-        print("[TEST 34/34] ADR-0018: cold start melengkapi tabel baru di DB lama tanpa menyentuh data.")
+        print("[TEST 34/36] ADR-0018: cold start melengkapi tabel baru di DB lama tanpa menyentuh data.")
+        # 35. Test Validasi Input (ADR-0019): whitelist + normalisasi
+        #     clearance, milestone_code wajib, laytime wajib 3 waktu,
+        #     JSON rusak -> 400 (bukan koneksi putus / data demo tersimpan).
+        #     Dulu semua ini melempar IntegrityError/AttributeError di
+        #     tengah transaksi dan menutup koneksi tanpa respons JSON.
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc_id}") as res:
+            detail35 = json.loads(res.read().decode("utf-8"))
+            cl35 = detail35["clearances"][0]["id"]
+        # status huruf kecil dinormalisasi -> 200 + tersimpan "APPROVED".
+        with urllib.request.urlopen(_post(f"/api/clearances/{cl35}/update",
+                {"status": "approved"})) as res:
+            assert res.status == 200
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc_id}") as res:
+            detail35 = json.loads(res.read().decode("utf-8"))
+            cl35_row = next(c for c in detail35["clearances"] if c["id"] == cl35)
+            assert cl35_row["status"] == "APPROVED", f"status 'approved' harus ternormalisasi jadi APPROVED, dapat {cl35_row['status']}"
+        _expect_400(f"/api/clearances/{cl35}/update", {"status": "BOGUS"}, "status tidak dikenal")
+        _expect_400(f"/api/clearances/{cl35}/update", {"doc_number": 12345}, "doc_number harus berupa teks")
+        # agency di luar whitelist -> 400; huruf kecil dinormalisasi -> 200.
+        _expect_400(f"/api/port-calls/{pc_id}/clearance",
+                    {"agency": "POLISI", "doc_type": "Surat X", "status": "APPROVED"}, "agency tidak dikenal")
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc_id}/clearance",
+                {"agency": "bea_cukai", "doc_type": "Dokumen Tes Validasi", "status": "pending"})) as res:
+            assert res.status == 200
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc_id}") as res:
+            detail35 = json.loads(res.read().decode("utf-8"))
+            baru35 = next(c for c in detail35["clearances"] if c["doc_type"] == "Dokumen Tes Validasi")
+            assert baru35["agency"] == "BEA_CUKAI" and baru35["status"] == "PENDING", f"agency/status harus ternormalisasi, dapat {baru35}"
+        # milestone: tanpa code -> 400; code tak dikenal -> 400; huruf
+        # kecil -> 200 (dinormalisasi jadi EOSP).
+        _expect_400(f"/api/port-calls/{pc_id}/milestone",
+                    {"event_time": "2026-11-02 10:00"}, "milestone_code wajib diisi")
+        _expect_400(f"/api/port-calls/{pc_id}/milestone",
+                    {"milestone_code": "TERBANG", "event_time": "2026-11-02 10:00"}, "milestone_code tidak dikenal")
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc_id}/milestone",
+                {"milestone_code": "eosp", "event_time": "2026-11-02 10:00", "remarks": "tes normalisasi"})) as res:
+            assert res.status == 200
+        # laytime: body kosong -> 400 (BUKAN 200 + milestone tanggal demo);
+        # satu waktu saja -> 400; lengkap -> 200.
+        _expect_400(f"/api/port-calls/{pc_id}/laytime/calculate", {}, "nor_tendered_time wajib diisi")
+        _expect_400(f"/api/port-calls/{pc_id}/laytime/calculate",
+                    {"nor_tendered_time": "2026-11-01 08:00"}, "commenced_time wajib diisi")
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc_id}/laytime/calculate",
+                {"nor_tendered_time": "2026-11-01 08:00",
+                 "commenced_time": "2026-11-01 14:00",
+                 "completed_time": "2026-11-03 14:00"})) as res:
+            assert res.status == 200
+        # Body JSON rusak / bukan objek -> 400 eksplisit; server tetap
+        # hidup sesudahnya (dulu koneksi putus tanpa respons).
+        def _post_raw(path, raw_bytes):
+            return urllib.request.Request(
+                f"{base_url}{path}", data=raw_bytes,
+                headers={"Content-Type": "application/json"})
+
+        def _expect_raw_400(path, raw_bytes, frag):
+            try:
+                urllib.request.urlopen(_post_raw(path, raw_bytes))
+                assert False, f"{path} harus ditolak 400 ({frag})"
+            except urllib.error.HTTPError as e:
+                assert e.code == 400
+                body = e.read().decode("utf-8")
+                assert frag in body, f"Respons 400 harus menyebut '{frag}', dapat {body}"
+
+        _expect_raw_400("/api/login", b"{bukan json", "Body harus berupa JSON valid")
+        _expect_raw_400("/api/login", b"[1, 2, 3]", "Body JSON harus berupa objek")
+        with urllib.request.urlopen(f"{base_url}/api/port-calls") as res:
+            assert res.status == 200, "Server harus tetap hidup setelah body rusak"
+        print("[TEST 35/36] ADR-0019: validasi whitelist/normalisasi clearance+milestone, laytime wajib 3 waktu, JSON rusak 400.")
+
+        # 36. Test Security Headers + /api/health (ADR-0019).
+        anon_opener = urllib.request.build_opener()  # tanpa cookie
+        with anon_opener.open(f"{base_url}/api/health") as res:
+            assert res.status == 200
+            health = json.loads(res.read().decode("utf-8"))
+            assert health["status"] == "ok" and health["db"] == "ok" and health["session_secret"] == "ok", f"Health harus ok, dapat {health}"
+        with urllib.request.urlopen(f"{base_url}/api/port-calls") as res:
+            assert res.headers.get("X-Content-Type-Options") == "nosniff"
+            assert res.headers.get("X-Frame-Options") == "DENY"
+            assert res.headers.get("Referrer-Policy") == "strict-origin-when-cross-origin"
+        with urllib.request.urlopen(f"{base_url}/") as res:
+            assert res.headers.get("X-Content-Type-Options") == "nosniff"
+            assert res.headers.get("X-Frame-Options") == "DENY"
+        with anon_opener.open(f"{base_url}/") as res:
+            assert res.headers.get("X-Content-Type-Options") == "nosniff", "Halaman login juga harus membawa security headers"
+        print("[TEST 36/36] ADR-0019: /api/health tanpa auth + security headers di API, UI, dan halaman login.")
 
         print("\nSEMUA INTEGRATION TEST LULUS (100% VERIFIED)!")
 

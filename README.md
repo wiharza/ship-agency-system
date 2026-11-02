@@ -329,6 +329,15 @@ lokal, tanpa query DB per request).
 - **Laytime SHEX:** hari Minggu dikecualikan dari perhitungan; hari libur
   TIDAK dikecualikan otomatis (tidak ada kalender libur) — catat sebagai
   jeda SOF manual (ADR-0016).
+- **Validasi input + ketahanan server (ADR-0019):** status/agency
+  clearance dan kode milestone di-whitelist sebelum query (nilai di luar
+  daftar → 400 yang menyebut daftar sah, bukan koneksi putus); laytime
+  wajib 3 waktu (tidak ada lagi default tanggal demo); body JSON rusak →
+  400 eksplisit; security headers di semua respons; `GET /api/health`
+  tanpa auth untuk monitoring. Detail postur keamanan: `SECURITY.md`.
+  CSP ketat ditunda (UI memakai inline script/onclick). Kredensial
+  default sengaja tidak diblokir selama uji coba — wajib diganti sebelum
+  data real masuk.
 - **Hash berkas:** kolom `file_sha256`/`file_name` hanya terisi bila ada
   berkas yang benar-benar diunggah (fitur upload belum ada); hash yang dulu
   ditampilkan adalah hash string referensi, bukan bukti berkas, dan sudah

@@ -586,6 +586,10 @@ def seed_sample_data():
     cursor = conn.cursor()
 
     def _count(table):
+        # WHITELIST ONLY (ADR-0019): `table` hanya dipanggil dengan 5
+        # nama tabel konstan di bawah (master_ports, master_terminals,
+        # master_branches, master_principals, master_vessels) — JANGAN
+        # pernah meneruskan nilai dari payload/path ke sini.
         return cursor.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
 
     ports_sql = """

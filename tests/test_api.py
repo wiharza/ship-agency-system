@@ -1144,7 +1144,7 @@ def test_integration():
             _prepare_database_once()
         finally:
             os.environ["AGENCY_DB_FILE"] = old_db_file
-        print("[TEST 34/41] ADR-0018: cold start melengkapi tabel baru di DB lama tanpa menyentuh data.")
+        print("[TEST 34/42] ADR-0018: cold start melengkapi tabel baru di DB lama tanpa menyentuh data.")
         # 35. Test Validasi Input (ADR-0019): whitelist + normalisasi
         #     clearance, milestone_code wajib, laytime wajib 3 waktu,
         #     JSON rusak -> 400 (bukan koneksi putus / data demo tersimpan).
@@ -1212,7 +1212,7 @@ def test_integration():
         _expect_raw_400("/api/login", b"[1, 2, 3]", "Body JSON harus berupa objek")
         with urllib.request.urlopen(f"{base_url}/api/port-calls") as res:
             assert res.status == 200, "Server harus tetap hidup setelah body rusak"
-        print("[TEST 35/41] ADR-0019: validasi whitelist/normalisasi clearance+milestone, laytime wajib 3 waktu, JSON rusak 400.")
+        print("[TEST 35/42] ADR-0019: validasi whitelist/normalisasi clearance+milestone, laytime wajib 3 waktu, JSON rusak 400.")
 
         # 36. Test Security Headers + /api/health (ADR-0019).
         anon_opener = urllib.request.build_opener()  # tanpa cookie
@@ -1229,7 +1229,7 @@ def test_integration():
             assert res.headers.get("X-Frame-Options") == "DENY"
         with anon_opener.open(f"{base_url}/") as res:
             assert res.headers.get("X-Content-Type-Options") == "nosniff", "Halaman login juga harus membawa security headers"
-        print("[TEST 36/41] ADR-0019: /api/health tanpa auth + security headers di API, UI, dan halaman login.")
+        print("[TEST 36/42] ADR-0019: /api/health tanpa auth + security headers di API, UI, dan halaman login.")
 
         # 37. Status VOID (ADR-0020): baris salah input dibatalkan — tetap
         #     tersimpan sebagai riwayat, gate SPB + daftar tertunda
@@ -1310,7 +1310,7 @@ def test_integration():
             det37 = json.loads(res.read().decode("utf-8"))
         voided = [c for c in det37["clearances"] if c["status"] == "VOID"]
         assert len(voided) == 2, f"Harus ada 2 baris VOID sebagai riwayat, dapat {len(voided)}"
-        print("[TEST 37/41] ADR-0020: VOID membatalkan salah input — gate abaikan baris void bersyarat, wajib tetap blokir, VOID final + OPS/ADMIN.")
+        print("[TEST 37/42] ADR-0020: VOID membatalkan salah input — gate abaikan baris void bersyarat, wajib tetap blokir, VOID final + OPS/ADMIN.")
 
         # 38. Migrasi CHECK VOID (ADR-0020): DB lama yang CHECK status-nya
         #     belum mengenal VOID dinaikkan (rebuild tabel) tanpa menyentuh
@@ -1387,7 +1387,7 @@ def test_integration():
             c2.close()
         finally:
             os.environ["AGENCY_DB_FILE"] = old_db_file
-        print("[TEST 38/41] ADR-0020: migrasi CHECK VOID (cold start + init_db) tanpa mengubah data; VOID bisa disimpan; idempotent.")
+        print("[TEST 38/42] ADR-0020: migrasi CHECK VOID (cold start + init_db) tanpa mengubah data; VOID bisa disimpan; idempotent.")
 
         # 39. Tambah pelabuhan master (ADR-0021): endpoint + validasi.
         # Kode huruf kecil -> dinormalisasi jadi IDBLW; duplikat -> 400;
@@ -1434,7 +1434,7 @@ def test_integration():
         _expect_400("/api/master/ports",
                     {"code": "IDSBY", "name": "Surabaya", "province": "Jawa Timur", "inaportnet_level": "Kelas I", "max_draft": -1},
                     "tidak boleh negatif")
-        print("[TEST 39/41] ADR-0021: tambah pelabuhan master (normalisasi kode+level, duplikat/kode/level/draft ditolak, terminal ikut tampil).")
+        print("[TEST 39/42] ADR-0021: tambah pelabuhan master (normalisasi kode+level, duplikat/kode/level/draft ditolak, terminal ikut tampil).")
 
         # 40. ADR-0022 — tenggat pasca-ATD (laytime 3d, voucher 7d,
         # FDA 30d, sengketa 14d) dihitung dari ATD; badge di detail +
@@ -1543,7 +1543,7 @@ def test_integration():
         with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc42}") as res:
             det42 = json.loads(res.read().decode("utf-8"))
         assert det42["post_atd"] == [], f"tanpa ATD post_atd harus kosong, dapat {det42['post_atd']}"
-        print("[TEST 40/41] ADR-0022: tenggat pasca-ATD (laytime 3d/voucher 7d/FDA 30d/sengketa 14d) + badge detail & papan shift.")
+        print("[TEST 40/42] ADR-0022: tenggat pasca-ATD (laytime 3d/voucher 7d/FDA 30d/sengketa 14d) + badge detail & papan shift.")
 
         # 41. ADR-0024 — milestone GANGWAY_DOWN + COB (SOP Tahap 3-4):
         # wajib catat menit tepat, keduanya TIDAK mengubah status.
@@ -1569,7 +1569,68 @@ def test_integration():
         assert {"GANGWAY_DOWN", "COB"} <= codes43, f"kedua milestone harus tercatat, dapat {codes43}"
         gw = next(m for m in det43["milestones"] if m["milestone_code"] == "GANGWAY_DOWN")
         assert gw["event_time"] == "2026-11-12 10:05"
-        print("[TEST 41/41] ADR-0024: milestone GANGWAY_DOWN + COB tercatat (menit tepat), status tidak berubah.")
+        print("[TEST 41/42] ADR-0024: milestone GANGWAY_DOWN + COB tercatat (menit tepat), status tidak berubah.")
+
+        # 42. ADR-0025 — sertifikat kapal: tambah + badge expired/akan
+        # expired (<= 30 hari) di detail + papan shift; expiry terbaru
+        # per jenis yang dinilai.
+        today42 = datetime.now().date()
+        # Kapal seed (9431289) sudah punya SSCEC seed s.d. 2027-12-31.
+        with urllib.request.urlopen(f"{base_url}/api/vessels/9431289/certificates") as res:
+            certs_seed = json.loads(res.read().decode("utf-8"))
+        assert len(certs_seed["certificates"]) == 1
+        assert certs_seed["certificates"][0]["cert_type"] == "SSCEC"
+        assert certs_seed["alerts"] == [], "SSCEC seed 2027 tidak boleh alert"
+        # Sertifikat Garis Muat yang sudah kedaluwarsa 5 hari lalu.
+        with urllib.request.urlopen(_post("/api/vessels/9431289/certificates",
+                {"cert_type": "Sertifikat Garis Muat", "cert_number": "GL-2025-88",
+                 "issued_date": (today42 - timedelta(days=400)).isoformat(),
+                 "expiry_date": (today42 - timedelta(days=5)).isoformat(),
+                 "notes": "kedaluwarsa — perpanjang sebelum sandar berikut"})) as res:
+            assert res.status == 200
+        # SSCEC baru yang lebih dekat (10 hari lagi) — expiry terbaru
+        # per jenis adalah 2027, jadi SSCEC tetap tidak alert.
+        with urllib.request.urlopen(_post("/api/vessels/9431289/certificates",
+                {"cert_type": "SSCEC", "cert_number": "SSCEC-2026-200",
+                 "expiry_date": (today42 + timedelta(days=10)).isoformat()})) as res:
+            assert res.status == 200
+        # Sertifikat SAMUDRA JAYA (9876543) yang akan expired 10 hari lagi.
+        with urllib.request.urlopen(_post("/api/vessels/9876543/certificates",
+                {"cert_type": "Sertifikat Manajemen Keselamatan (SMC)",
+                 "expiry_date": (today42 + timedelta(days=10)).isoformat()})) as res:
+            assert res.status == 200
+        # Penolakan: jenis kosong, tanggal rusak, kapal tidak dikenal.
+        _expect_400("/api/vessels/9431289/certificates",
+                    {"cert_type": "", "expiry_date": "2027-01-01"}, "cert_type")
+        _expect_400("/api/vessels/9431289/certificates",
+                    {"cert_type": "SSCEC", "expiry_date": "31-12-2027"}, "expiry_date")
+        try:
+            urllib.request.urlopen(_post("/api/vessels/0000000/certificates",
+                    {"cert_type": "SSCEC", "expiry_date": "2027-01-01"}))
+            assert False, "Kapal tidak dikenal harus 404"
+        except urllib.error.HTTPError as e:
+            assert e.code == 404
+        # Detail kapal seed: Garis Muat expired, SSCEC aman.
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/PC-2026-JKT-0001") as res:
+            det_cert = json.loads(res.read().decode("utf-8"))
+        assert len(det_cert["certificates"]) == 3
+        alerts_cert = {a["cert_type"]: a for a in det_cert["cert_alerts"]}
+        assert set(alerts_cert) == {"Sertifikat Garis Muat"}, f"hanya Garis Muat yang alert, dapat {list(alerts_cert)}"
+        assert alerts_cert["Sertifikat Garis Muat"]["status"] == "expired"
+        assert alerts_cert["Sertifikat Garis Muat"]["days_left"] in (-6, -5)
+        # Papan shift: kartu kapal seed membawa alert expired; kartu
+        # kapal SAMUDRA JAYA (pc40, DEPARTED) membawa alert expiring.
+        with urllib.request.urlopen(f"{base_url}/api/shift-board") as res:
+            board = json.loads(res.read().decode("utf-8"))
+        card_seed = next(c for c in board["cards"] if c["id"] == "PC-2026-JKT-0001")
+        assert len(card_seed["cert_alerts"]) == 1
+        assert card_seed["cert_alerts"][0]["status"] == "expired"
+        card40b = next(c for c in board["cards"] if c["id"] == pc40)
+        smc = [a for a in card40b["cert_alerts"] if "SMC" in a["cert_type"]]
+        assert len(smc) == 1 and smc[0]["status"] == "expiring"
+        assert smc[0]["days_left"] in (9, 10)
+        assert board["totals"]["cert_alerts"] >= 2
+        print("[TEST 42/42] ADR-0025: sertifikat kapal (SSCEC + statutori) — tambah, badge expired/akan expired di detail & papan shift.")
 
         print("\nSEMUA INTEGRATION TEST LULUS (100% VERIFIED)!")
 

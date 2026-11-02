@@ -343,6 +343,7 @@ lokal, tanpa query DB per request).
 - **Tenggat pasca-ATD (ADR-0022):** badge "Laytime due 2d" / "FDA due 28d" di header detail + kartu papan shift — laytime ATD+3 hari, voucher ATD+7 hari, FDA ATD+30 hari, sengketa 14 hari sejak diajukan; yang selesai tidak lagi menarik perhatian di papan shift.
 - **Matriks selisih FDA (ADR-0023):** kolom "Selisih FDA − PDA" per pos + baris TOTAL di tabel keuangan — FDA melebihi PDA tampil merah, pos FDA belum diisi tampil "Belum diisi" (bukan selisih negatif), total dilengkapi catatan bila belum final.
 - **Milestone GANGWAY_DOWN + COB (ADR-0024):** dua kode milestone baru (13 kode) — gangway down dan cargo documents on board, keduanya wajib catat menit tepat dan tidak mengubah status.
+- **Sertifikat kapal (ADR-0025):** pelacakan SSCEC + sertifikat statutori per kapal — badge merah bila kedaluwarsa, kuning bila sisa ≤ 30 hari, di header detail dan kartu papan shift; tanggal kedaluwarsa di masa lalu boleh dicatat (justru pemicu pengingat).
 
 - **Hash berkas:** kolom `file_sha256`/`file_name` hanya terisi bila ada
   berkas yang benar-benar diunggah (fitur upload belum ada); hash yang dulu

@@ -72,6 +72,25 @@ CSS/JS asli dengan data API asli yang direkam dari server lokal
 - Suite tetap hijau: `test_laytime.py`, `test_api.py` 21/21,
   `test_libsql_backend.py`.
 
+## Addendum (1 Nov 2026) — baris tab jadi carousel geser
+
+Temuan lanjutan dari pengguna setelah ADR ini: di 390px, 6 tombol tab
+dipaksa masuk satu baris flex selebar kartu (~336px). Tombol menyusut
+sampai min-content-nya (~84–108px) dan label melipat 3–4 baris
+("Rekonsiliasi PDA/FDA & Dispute" 4 baris); baris tab terukur **94px**,
+label susah dibaca. `.tabs` sudah `overflow-x: auto`, tapi tidak pernah
+terpakai karena tombolnya menyusut, bukan meluber.
+
+Perbaikan 1 baris di `.tab-btn` (commit menyusul di branch
+`perbaiki-tab-mobile`): `white-space: nowrap; flex-shrink: 0;` —
+tombol mengambil lebar alaminya satu baris teks, baris tab menjadi
+carousel yang digeser horizontal dengan jempol (pola standar aplikasi
+mobile). Hasil ukur: baris tab **94px → 45px**, tiap tombol 44px satu
+baris, `scrollWidth` baris 1063px vs `clientWidth` 336px (scrollable:
+true), halaman tetap tanpa overflow di 390px dan 820px. Diterapkan
+global (bukan hanya media query): di desktop keenam tab tetap muat,
+dan bila suatu saat meluber, barisnya tinggal di-scroll seperti di HP.
+
 ## Konsekuensi
 
 - Tab bar (`.tabs`) tetap `overflow-x: auto`: di HP, tab yang aktif

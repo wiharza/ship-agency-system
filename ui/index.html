@@ -141,6 +141,7 @@
           <h3 style="margin: 0;">Port Calls</h3>
           <button class="btn btn-cyan" style="padding: 4px 10px; font-size: 11px;" onclick="openNewPortCallModal()">+ Tambah</button>
         </div>
+        <div id="shift-board" style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px;">Memuat papan shift…</div>
         <div id="pc-list">Memuat data port call...</div>
       </div>
     </div>
@@ -165,6 +166,9 @@
           </div>
           <div class="timer-text" id="spb-timer-display">24:00:00</div>
         </div>
+
+        <!-- Riwayat SPB yang sudah digantikan (ADR-0017) -->
+        <div id="spb-history-line" style="display: none; font-size: 12px; color: var(--text-muted); margin-bottom: 12px;"></div>
 
         <!-- Dual Authorization Banner (Putusan Q26) -->
         <div class="dual-auth">
@@ -201,8 +205,13 @@
               <p><strong>Principal:</strong> <span id="ov-principal">-</span></p>
               <p><strong>Cabang Pengelola:</strong> <span id="ov-branch">-</span></p>
               <p><strong>ETA Faktual:</strong> <span id="ov-eta">-</span></p>
+              <p><strong>ETD:</strong> <span id="ov-etd">-</span></p>
               <p><strong>Status Port Call:</strong> <span id="ov-status" class="badge badge-cyan">-</span></p>
             </div>
+          </div>
+          <div style="margin-top: 8px;">
+            <button class="btn btn-outline" id="btn-edit-pc" style="padding: 4px 10px; font-size: 12px;" onclick="openEditPortCallModal()">✏️ Ubah ETA / ETD / Muatan</button>
+            <small style="color: var(--text-muted); font-size: 11px; margin-left: 8px;">Tenggat RKSP (ETA−24 jam) dan permohonan SPB (ETD−4 jam) dihitung ulang dari nilai baru.</small>
           </div>
         </div>
 
@@ -211,15 +220,17 @@
           <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 12px; font-size: 12px; color: var(--text-muted);">
             <strong style="color: var(--cyan);">⚠️ Tracker internal — bukan portal resmi.</strong>
             Pengajuan resmi tetap dilakukan di Inaportnet / INSW / CEISA / Simkapel / SINKARKES.
-            Sistem ini hanya mencatat nomor dokumen, status, tenggat, dan bukti (hash SHA-256).
+            Sistem ini hanya mencatat nomor dokumen, status, dan tenggat. Kolom sidik jari berkas (SHA-256)
+            sengaja kosong sampai ada fitur unggah berkas — dulu kolom itu diisi hash dari string referensi,
+            bukan dari isi berkas (dikoreksi ADR-0016).
             INSW (single window lintas instansi, Warta I–V) berbeda dengan Inaportnet (layanan kapal Ditjen Hubla, PM 8/2022).
           </div>
           <div id="clearance-checklist">Memuat checklist tenggat clearance…</div>
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-            <p style="font-size: 12px; color: var(--text-muted);">Pencatatan nomor surat resmi dan hash berkas SHA-256 (Putusan Q18).</p>
+            <p style="font-size: 12px; color: var(--text-muted);">Pencatatan nomor surat resmi (Putusan Q18 — sidik jari berkas hanya terisi bila ada berkas yang diunggah).</p>
             <div style="display: flex; gap: 8px;">
               <button class="btn btn-cyan" style="padding: 4px 10px; font-size: 12px;" onclick="openNewClearanceModal()">+ Tambah Item Dokumen</button>
-              <button class="btn btn-outline" style="padding: 4px 10px; font-size: 12px;" onclick="triggerSPBModal()">+ Terbitkan SPB</button>
+              <button class="btn btn-outline" style="padding: 4px 10px; font-size: 12px;" onclick="openSPBModal()" id="btn-spb">+ Terbitkan SPB</button>
             </div>
           </div>
           <table>
@@ -301,7 +312,21 @@
             </div>
           </div>
 
-          <h3>Daftar Jeda & Berita Acara Lapangan</h3>
+          <h3>Log Tonggak Waktu (Milestone)</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Peristiwa</th>
+                <th>Waktu</th>
+                <th>Dicatat oleh</th>
+                <th>Keterangan</th>
+                <th style="width: 80px; text-align: center;">Aksi</th>
+              </tr>
+            </thead>
+            <tbody id="milestones-table-body"></tbody>
+          </table>
+
+          <h3 style="margin-top: 24px;">Daftar Jeda & Berita Acara Lapangan</h3>
           <table>
             <thead>
               <tr>
@@ -320,7 +345,40 @@
         <div id="tab-laytime" class="tab-pane" style="display: none;">
           <div class="grid-laytime">
             <div style="background: rgba(0,0,0,0.2); padding: 16px; border-radius: 6px;">
-              <h4 style="font-size: 13px; margin-bottom: 12px;">Parameter Charter Party</h4>
+              <h4 style="font-size: 13px; margin-bottom: 12px;">Parameter Charter Party (dari recap fixture)</h4>
+              <div class="form-group">
+                <label>Charterer</label>
+                <input type="text" id="cp-charterer" value="Charterer Standard">
+              </div>
+              <div class="grid-2" style="gap: 8px;">
+                <div class="form-group">
+                  <label>Rate Bongkar (MT/hari)</label>
+                  <input type="number" id="cp-rate" value="10000">
+                </div>
+                <div class="form-group">
+                  <label>Ketentuan (Terms)</label>
+                  <select id="cp-terms">
+                    <option value="SHINC">SHINC</option>
+                    <option value="SHEX">SHEX (Minggu dikecualikan)</option>
+                  </select>
+                </div>
+              </div>
+              <div class="grid-2" style="gap: 8px;">
+                <div class="form-group">
+                  <label>Demurrage (USD/hari)</label>
+                  <input type="number" id="cp-demurrage" value="20000">
+                </div>
+                <div class="form-group">
+                  <label>Despatch (USD/hari)</label>
+                  <input type="number" id="cp-despatch" value="10000">
+                </div>
+              </div>
+              <div class="form-group">
+                <label>Jam Notice NOR (jam)</label>
+                <input type="number" id="cp-notice" value="6">
+              </div>
+              <button class="btn btn-outline" id="btn-save-cp" style="width: 100%; margin-bottom: 12px;" onclick="saveCharterParty()">💾 Simpan Parameter Fixture</button>
+              <h4 style="font-size: 13px; margin-bottom: 12px;">Waktu Operasional</h4>
               <div class="form-group">
                 <label>Waktu Tender NOR</label>
                 <input type="text" id="lt-nor" value="2026-11-01 08:00">
@@ -333,7 +391,8 @@
                 <label>Waktu Selesai Muat (Completed)</label>
                 <input type="text" id="lt-comp" value="2026-11-04 14:00">
               </div>
-              <button class="btn btn-cyan" style="width: 100%; margin-top: 8px;" onclick="calculateLaytime()">⚡ Hitung Laytime Deterministik</button>
+              <button class="btn btn-cyan" style="width: 100%; margin-top: 8px;" onclick="calculateLaytime()">⚡ Hitung &amp; Simpan Laytime</button>
+              <p style="font-size: 11px; color: var(--text-muted); margin-top: 8px;">Hasil tersimpan dan NOR/mulai/selesai dicatat sebagai milestone — shift berikutnya melihatnya di SOF dan handover.</p>
             </div>
 
             <div id="laytime-result-panel" style="background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 6px; padding: 16px;">
@@ -350,7 +409,7 @@
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
             <h3 style="margin: 0;">Rekonsiliasi PDA vs FDA</h3>
             <span style="display: flex; gap: 8px; align-items: center;">
-              <button class="btn btn-cyan" style="padding: 4px 10px; font-size: 12px;" onclick="submitDisbursement()">+ Tambah Item PDA/FDA</button>
+              <button class="btn btn-cyan" style="padding: 4px 10px; font-size: 12px;" onclick="openDisbursementModal()">+ Tambah Item PDA/FDA</button>
               <span class="badge badge-yellow">Batas FDA: 30 Hari Pasca ATD (Q31)</span>
             </span>
           </div>
@@ -377,6 +436,7 @@
                 <th>Alasan Principal</th>
                 <th>Batas Waktu Respon</th>
                 <th>Status</th>
+                <th style="width: 110px; text-align: center;">Aksi</th>
               </tr>
             </thead>
             <tbody id="disputes-table-body"></tbody>
@@ -400,6 +460,8 @@
     let activePortCallId = null;
     let currentData = null;
     let timerInterval = null;
+    let currentRole = null;  // diisi loadSessionUser() dari /api/me
+    let shiftAlerts = {};    // id port call -> ringkasan papan shift
 
     // Escape teks sebelum dimasukkan ke innerHTML (ADR-0016): data dari
     // server (nama kapal, nomor dokumen, remarks, ...) adalah input
@@ -414,9 +476,32 @@
     }
 
     async function loadPortCalls() {
-      const res = await fetch('/api/port-calls');
+      const [res, boardRes] = await Promise.all([
+        fetch('/api/port-calls'),
+        fetch('/api/shift-board').catch(() => null)
+      ]);
       if (res.status === 401) { location.reload(); return; }  // session habis -> halaman login
       const data = await res.json();
+      // Papan shift (ADR-0017): ringkasan tugas per port call supaya
+      // petugas jaga tidak perlu membuka satu per satu. Bila gagal
+      // dimuat, daftar tetap tampil tanpa badge peringatan.
+      shiftAlerts = {};
+      const boardEl = document.getElementById('shift-board');
+      if (boardRes && boardRes.ok) {
+        const board = await boardRes.json();
+        (board.cards || []).forEach(c => { shiftAlerts[c.id] = c; });
+        const t = board.totals || {};
+        const parts = [];
+        if (t.overdue_docs) parts.push(`<span style="color:#f87171;">${t.overdue_docs} dokumen lewat tenggat</span>`);
+        if (t.spb_expired) parts.push(`<span style="color:#f87171;">${t.spb_expired} SPB kedaluwarsa</span>`);
+        if (t.spb_under_6h) parts.push(`<span style="color:#fbbf24;">${t.spb_under_6h} SPB sisa &lt; 6 jam</span>`);
+        if (t.needs_spb) parts.push(`<span style="color:#fbbf24;">${t.needs_spb} sandar, SPB belum diterbitkan</span>`);
+        if (t.open_disputes) parts.push(`<span style="color:#f87171;">${t.open_disputes} sengketa OPEN</span>`);
+        boardEl.innerHTML = `<strong style="color:var(--cyan);">Papan Shift — ${t.active_calls || 0} port call aktif:</strong> ` +
+          (parts.length ? parts.join(' • ') : '<span style="color:#34d399;">tidak ada yang mendesak</span>');
+      } else {
+        boardEl.innerHTML = '';
+      }
       const listEl = document.getElementById('pc-list');
       listEl.innerHTML = '';
       
@@ -424,6 +509,18 @@
         const item = document.createElement('div');
         item.className = 'pc-item' + (pc.id === activePortCallId ? ' active' : '');
         item.onclick = () => selectPortCall(pc.id);
+        // Badge peringatan papan shift di kartu (ADR-0017).
+        const a = shiftAlerts[pc.id];
+        let alerts = '';
+        if (a) {
+          const bits = [];
+          if (a.overdue_docs && a.overdue_docs.length) bits.push(`<span class="badge badge-red">${a.overdue_docs.length} dok lewat tenggat</span>`);
+          if (a.spb_state === 'expired') bits.push(`<span class="badge badge-red">SPB kedaluwarsa</span>`);
+          else if (a.spb_state === 'under_6h') bits.push(`<span class="badge badge-yellow">SPB ${a.spb_hours_left} jam lagi</span>`);
+          if (a.needs_spb) bits.push(`<span class="badge badge-yellow">SPB belum diterbitkan</span>`);
+          if (a.open_disputes && a.open_disputes.length) bits.push(`<span class="badge badge-red">${a.open_disputes.length} sengketa OPEN</span>`);
+          if (bits.length) alerts = `<div style="margin-top: 6px; display: flex; gap: 4px; flex-wrap: wrap;">${bits.join('')}</div>`;
+        }
         item.innerHTML = `
           <div class="pc-vessel">${esc(pc.vessel_name)}</div>
           <div class="pc-meta">${esc(pc.id)} | ${esc(pc.port_name)}</div>
@@ -431,6 +528,7 @@
             <span class="badge ${pc.vessel_category === 'FOREIGN' ? 'badge-yellow' : 'badge-cyan'}">${esc(pc.vessel_category)}</span>
             <span class="badge badge-green">${esc(pc.status)}</span>
           </div>
+          ${alerts}
         `;
         listEl.appendChild(item);
       });
@@ -468,6 +566,7 @@
       document.getElementById('ov-principal').innerText = `${currentData.principal_name} (${currentData.principal_email})`;
       document.getElementById('ov-branch').innerText = currentData.branch_name;
       document.getElementById('ov-eta').innerText = currentData.eta;
+      document.getElementById('ov-etd').innerText = currentData.etd || '-';
       document.getElementById('ov-status').innerText = currentData.status;
 
       // Badges
@@ -504,6 +603,49 @@
         if (timerInterval) clearInterval(timerInterval);
       }
 
+      // Riwayat SPB yang sudah digantikan (ADR-0017): nomor lama tidak
+      // hilang begitu saja — tampilkan di bawah banner timer.
+      const histEl = document.getElementById('spb-history-line');
+      if (currentData.spb_history && currentData.spb_history.length) {
+        histEl.style.display = 'block';
+        histEl.innerHTML = 'SPB sebelumnya: ' + currentData.spb_history.map(h =>
+          `${esc(h.doc_number || '(tanpa nomor)')} (terbit ${esc(h.issued_at)}, kedaluwarsa ${esc(h.expiry_at || '-')}, digantikan ${esc(h.superseded_at)} oleh ${esc(h.superseded_by)})`
+        ).join('<br>');
+      } else {
+        histEl.style.display = 'none';
+        histEl.innerHTML = '';
+      }
+
+      // Tombol yang dibatasi role (server tetap yang menegakkan;
+      // menyembunyikan di sini hanya supaya tidak salah pencet).
+      const spbBtn = document.getElementById('btn-spb');
+      if (spbBtn) spbBtn.style.display = (currentRole === 'FINANCE') ? 'none' : '';
+      const editPcBtn = document.getElementById('btn-edit-pc');
+      if (editPcBtn) editPcBtn.style.display = (currentRole === 'FINANCE') ? 'none' : '';
+      const saveCpBtn = document.getElementById('btn-save-cp');
+      if (saveCpBtn) saveCpBtn.style.display = (currentRole === 'FINANCE') ? 'none' : '';
+
+      // Prefill parameter charter party + hasil laytime terakhir.
+      if (currentData.charter_party) {
+        const cp = currentData.charter_party;
+        document.getElementById('cp-charterer').value = cp.charterer_name || '';
+        document.getElementById('cp-rate').value = cp.loading_rate_per_day;
+        document.getElementById('cp-terms').value = cp.laytime_terms;
+        document.getElementById('cp-demurrage').value = cp.demurrage_usd_per_day;
+        document.getElementById('cp-despatch').value = cp.despatch_usd_per_day;
+        document.getElementById('cp-notice').value = cp.nor_notice_hours;
+      }
+      if (currentData.latest_laytime) {
+        const lt = currentData.latest_laytime;
+        document.getElementById('laytime-output').innerHTML = `
+          <div style="font-size: 18px; font-weight: 800; margin-bottom: 8px; color: ${lt.claim_type === 'DEMURRAGE' ? '#f87171' : '#34d399'};">
+            STATUS: ${esc(lt.claim_type)} — $${Number(lt.amount_usd).toLocaleString()} USD
+          </div>
+          <p><strong>Hasil terakhir tersimpan</strong> — NOR ${esc(lt.nor_tendered_time)}, mulai ${esc(lt.commenced_time)}, selesai ${esc(lt.completed_time)} (${esc(lt.terms)}).</p>
+          <p>Laytime diizinkan: ${Number(lt.allowed_days).toFixed(2)} hari • terpakai: ${Number(lt.used_days).toFixed(2)} hari • dihitung ${esc(lt.calculated_by)} ${esc(lt.calculated_at)}.</p>
+          <p style="font-size: 11px; color: var(--text-muted);">Hitung ulang dengan waktu/parameter baru untuk memperbarui hasil ini.</p>`;
+      }
+
       renderChecklist();
 
       // Render Clearances Table
@@ -521,6 +663,21 @@
           <td style="text-align: center;"><button class="btn btn-outline" style="padding: 2px 8px; font-size: 11px;" onclick="openEditClearanceModal(${cl.id})">Edit</button></td>
         `;
         clTable.appendChild(tr);
+      });
+
+      // Render Milestones (log SOF) — dengan tombol koreksi waktu.
+      const msTable = document.getElementById('milestones-table-body');
+      msTable.innerHTML = '';
+      (currentData.milestones || []).forEach(m => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><span class="badge badge-cyan">${esc(m.milestone_code)}</span></td>
+          <td>${esc(m.event_time)}</td>
+          <td>${esc(m.recorded_by)}</td>
+          <td>${esc(m.remarks) || '-'}</td>
+          <td style="text-align: center;"><button class="btn btn-outline" style="padding: 2px 8px; font-size: 11px;" onclick="openEditMilestoneModal(${m.id})">Koreksi</button></td>
+        `;
+        msTable.appendChild(tr);
       });
 
       // Render Stoppages
@@ -549,7 +706,8 @@
           <td>Rp ${Number(d.pda_estimate).toLocaleString('id-ID')}</td>
           <td>Rp ${Number(d.fda_actual).toLocaleString('id-ID')}</td>
           <td>${d.ntpn ? 'NTPN: ' + esc(d.ntpn) : (d.simponi_billing ? 'Bill: ' + esc(d.simponi_billing) : '-')}</td>
-          <td><button class="btn btn-outline" style="padding:2px 8px; font-size:11px;" onclick="openDisputeModal(${d.id})">Ajukan Sengketa</button></td>
+          <td style="white-space: nowrap;"><button class="btn btn-outline" style="padding:2px 8px; font-size:11px;" onclick="openEditDisbursementModal(${d.id})">Lengkapi FDA</button>
+          <button class="btn btn-outline" style="padding:2px 8px; font-size:11px;" onclick="openDisputeModal(${d.id})">Ajukan Sengketa</button></td>
         `;
         finTable.appendChild(tr);
       });
@@ -559,12 +717,14 @@
       dTable.innerHTML = '';
       (currentData.disputes || []).forEach(dp => {
         const tr = document.createElement('tr');
+        const canResolve = dp.status === 'OPEN' || dp.status === 'UNDER_REVIEW';
         tr.innerHTML = `
           <td>${esc(dp.item_name)}</td>
           <td>Rp ${Number(dp.disputed_amount).toLocaleString('id-ID')}</td>
           <td>${esc(dp.principal_reason)}</td>
           <td>${esc(dp.deadline_date)}</td>
-          <td><span class="badge badge-red">${esc(dp.status)}</span></td>
+          <td><span class="badge ${dp.status === 'OPEN' ? 'badge-red' : (dp.status === 'UNDER_REVIEW' ? 'badge-yellow' : 'badge-green')}">${esc(dp.status)}</span></td>
+          <td style="text-align: center;">${canResolve ? `<button class="btn btn-outline" style="padding:2px 8px; font-size:11px;" onclick="openResolveDisputeModal(${dp.id})">Selesaikan</button>` : '-'}</td>
         `;
         dTable.appendChild(tr);
       });
@@ -625,6 +785,9 @@
         alert((data.milestone_recorded ? "Milestone TERCATAT, tetapi status kapal tidak berubah: " : "Gagal: ") + (data.error || "Terjadi kesalahan"));
         return;
       }
+      // Milestone tercatat tapi status tidak bergerak (mis. EOSP telat
+      // setelah DEPARTED) atau waktunya di luar urutan — beri tahu user.
+      if (data.note) alert(data.note);
       selectPortCall(activePortCallId);
     }
 
@@ -660,7 +823,10 @@
         alert("Gagal: " + (data.error || "Hasil kalkulasi tidak tersedia"));
         return;
       }
-      
+      // Hasil tersimpan — muat ulang dulu agar milestone baru & handover
+      // ikut tampil, baru tampilkan rincian hasil (supaya tidak langsung
+      // tertimpa ringkasan "hasil terakhir tersimpan" dari renderDetail).
+      await selectPortCall(activePortCallId);
       const out = document.getElementById('laytime-output');
       const isDemurrage = data.result.is_demurrage;
       out.innerHTML = `
@@ -676,24 +842,50 @@
           Kalkulasi diverifikasi deterministik dengan Python stdlib tanpa deviasi floating point.
           ${data.terms === 'SHEX' ? 'Hari libur tidak dikecualikan otomatis (sistem tidak punya kalender libur) — catat sebagai jeda SOF kategori Lainnya dengan keterangan "Libur: ...".' : ''}
         </div>
+        ${data.saved ? `<p style="font-size: 12px; color: #34d399; margin-top: 8px;">✅ Tersimpan (kalkulasi #${data.calculation_id}) — NOR, mulai, dan selesai muat tercatat sebagai milestone; shift berikutnya melihat hasil ini.</p>` : ''}
       `;
     }
 
-    async function triggerSPBModal() {
-      const docNum = prompt("Masukkan Nomor Surat Persetujuan Berlayar (SPB) resmi:", "SPB.IDTPP.2026.11.0042");
-      if (!docNum) return;
-      const nowStr = new Date().toISOString().replace("T", " ").substring(0, 19);
+    // -- Modal Form Terbit SPB (ADR-0017): menggantikan prompt() — di
+    // dermaga nomor mudah salah ketik, dan prasyarat harus terlihat
+    // SEBELUM tombol ditekan. Tombol terbit nonaktif bila ada blocker
+    // (dokumen belum lengkap / SPB masih berlaku / role bukan OPS/ADMIN).
+    async function openSPBModal() {
+      const res = await fetch(`/api/port-calls/${activePortCallId}/clearance-checklist`);
+      const data = await res.json();
+      const blockers = data.blockers || [];
+      const canIssue = data.can_issue_spb === true;
+      const listEl = document.getElementById('spb-blockers-list');
+      if (canIssue) {
+        listEl.innerHTML = '<span style="color:#34d399;">✅ Semua prasyarat terpenuhi — SPB boleh diterbitkan.</span>';
+      } else {
+        listEl.innerHTML = blockers.map(b => `<div style="color:#f87171;">• ${esc(b)}</div>`).join('');
+      }
+      document.getElementById('spb-doc-number').value = '';
+      document.getElementById('spb-issued-at').value = new Date().toISOString().slice(0, 16);
+      document.getElementById('btn-submit-spb').disabled = !canIssue;
+      document.getElementById('modal-spb').style.display = 'flex';
+    }
+    function closeSPBModal() { document.getElementById('modal-spb').style.display = 'none'; }
 
+    async function submitSPB() {
+      const doc_number = document.getElementById('spb-doc-number').value.trim();
+      const issued_at = document.getElementById('spb-issued-at').value.replace('T', ' ');
+      if (!doc_number) { alert("Nomor SPB wajib diisi!"); return; }
       const res = await fetch(`/api/port-calls/${activePortCallId}/spb`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ doc_number: docNum, issued_at: nowStr })
+        body: JSON.stringify({ doc_number, issued_at })
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        alert("SPB DITOLAK:\n" + (data.blockers || [data.error || "Prasyarat belum terpenuhi"]).join("\n- "));
+        const daftar = (data.blockers && data.blockers.length)
+          ? "\nPenghalang:\n- " + data.blockers.join("\n- ") : "";
+        alert("Gagal: " + (data.error || "Terjadi kesalahan") + daftar);
         return;
       }
+      closeSPBModal();
+      alert(`SPB ${doc_number} diterbitkan — berlaku sampai ${data.spb_expiry_at} (24 jam, PM 28/2022).`);
       selectPortCall(activePortCallId);
     }
 
@@ -725,37 +917,98 @@
         .catch(() => { el.innerHTML = 'Checklist tidak dapat dimuat.'; });
     }
 
+    // -- Modal Tambah Biaya PDA/FDA (ADR-0017): menggantikan prompt().
+    function openDisbursementModal() {
+      if (!activePortCallId) return;
+      document.getElementById('new-dis-category').value = 'HUSBANDRY';
+      document.getElementById('new-dis-item').value = '';
+      document.getElementById('new-dis-pda').value = '';
+      document.getElementById('new-dis-fda').value = '0';
+      document.getElementById('new-dis-billing').value = '';
+      document.getElementById('new-dis-ntpn').value = '';
+      document.getElementById('new-dis-invoice').value = '';
+      document.getElementById('modal-disbursement').style.display = 'flex';
+    }
+    function closeDisbursementModal() { document.getElementById('modal-disbursement').style.display = 'none'; }
+
     async function submitDisbursement() {
       if (!activePortCallId) return;
-      const category = prompt("Kategori (PNBP_KEMENHUB / BUP_PELINDO / CIGP_INSTANSI / HUSBANDRY / AGENCY_FEE):", "HUSBANDRY");
-      if (!category) return;
-      const item_name = prompt("Nama item biaya:", "Pasokan Air Tawar");
-      if (!item_name) return;
-      const pda = parseFloat(prompt("Estimasi PDA (IDR):", "10000000")) || 0;
-      const fda = parseFloat(prompt("Realisasi FDA (IDR, 0 bila belum ada):", "0")) || 0;
+      const category = document.getElementById('new-dis-category').value;
+      const item_name = document.getElementById('new-dis-item').value.trim();
+      const pda = parseFloat(document.getElementById('new-dis-pda').value) || 0;
+      const fda = parseFloat(document.getElementById('new-dis-fda').value) || 0;
+      const simponi_billing = document.getElementById('new-dis-billing').value.trim();
+      const ntpn = document.getElementById('new-dis-ntpn').value.trim();
+      const invoice_number = document.getElementById('new-dis-invoice').value.trim();
+      if (!item_name) { alert("Nama item biaya wajib diisi!"); return; }
       const res = await fetch(`/api/port-calls/${activePortCallId}/disbursements`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ category: category.trim().toUpperCase(), item_name, pda_estimate: pda, fda_actual: fda })
+        body: JSON.stringify({ category, item_name, pda_estimate: pda, fda_actual: fda, simponi_billing, ntpn, invoice_number })
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) { alert("Gagal: " + (data.error || "Terjadi kesalahan")); return; }
+      closeDisbursementModal();
       selectPortCall(activePortCallId);
     }
 
+    // -- Modal Lengkapi FDA di baris yang sama (ADR-0017): PDA dicatat
+    // dulu, NTPN & realisasi FDA datang kemudian — ubah baris yang ada,
+    // jangan tambah baris baru (rekon jadi dobel).
+    function openEditDisbursementModal(id) {
+      const d = (currentData.disbursements || []).find(x => x.id === id);
+      if (!d) return;
+      document.getElementById('edit-dis-id').value = d.id;
+      document.getElementById('edit-dis-label').innerText = `${d.item_name} — PDA Rp ${Number(d.pda_estimate).toLocaleString('id-ID')}`;
+      document.getElementById('edit-dis-fda').value = d.fda_actual || 0;
+      document.getElementById('edit-dis-billing').value = d.simponi_billing || '';
+      document.getElementById('edit-dis-ntpn').value = d.ntpn || '';
+      document.getElementById('edit-dis-invoice').value = d.invoice_number || '';
+      document.getElementById('modal-edit-disbursement').style.display = 'flex';
+    }
+    function closeEditDisbursementModal() { document.getElementById('modal-edit-disbursement').style.display = 'none'; }
+
+    async function submitEditDisbursement() {
+      const id = document.getElementById('edit-dis-id').value;
+      const fda_actual = parseFloat(document.getElementById('edit-dis-fda').value) || 0;
+      const simponi_billing = document.getElementById('edit-dis-billing').value.trim();
+      const ntpn = document.getElementById('edit-dis-ntpn').value.trim();
+      const invoice_number = document.getElementById('edit-dis-invoice').value.trim();
+      const res = await fetch(`/api/disbursements/${id}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fda_actual, simponi_billing, ntpn, invoice_number })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert("Gagal: " + (data.error || "Terjadi kesalahan")); return; }
+      closeEditDisbursementModal();
+      selectPortCall(activePortCallId);
+    }
+
+    // -- Modal Tambah Kapal Master (ADR-0017): menggantikan prompt().
+    function openVesselModal() {
+      document.getElementById('new-vsl-imo').value = '';
+      document.getElementById('new-vsl-name').value = '';
+      document.getElementById('new-vsl-flag').value = 'ID';
+      document.getElementById('new-vsl-type').value = 'Bulk Carrier';
+      document.getElementById('new-vsl-grt').value = '';
+      document.getElementById('modal-vessel').style.display = 'flex';
+    }
+    function closeVesselModal() { document.getElementById('modal-vessel').style.display = 'none'; }
+
     async function submitNewVessel() {
-      const imo = prompt("IMO kapal (wajib):", "");
-      if (!imo) return;
-      const name = prompt("Nama kapal:", "MV. CONTOH");
-      if (!name) return;
-      const flag = prompt("Bendera (kode negara, mis. ID / PA / SG):", "ID");
-      const vessel_type = prompt("Jenis kapal:", "Bulk Carrier") || "General Cargo";
-      const grt = parseFloat(prompt("GRT:", "10000")) || 0;
+      const imo = document.getElementById('new-vsl-imo').value.trim();
+      const name = document.getElementById('new-vsl-name').value.trim();
+      const flag = document.getElementById('new-vsl-flag').value.trim().toUpperCase();
+      const vessel_type = document.getElementById('new-vsl-type').value.trim() || "General Cargo";
+      const grt = parseFloat(document.getElementById('new-vsl-grt').value) || 0;
+      if (!imo) { alert("IMO kapal wajib diisi!"); return; }
+      if (!name) { alert("Nama kapal wajib diisi!"); return; }
       const res = await fetch('/api/master/vessels', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imo: imo.trim(), name, flag: flag.trim().toUpperCase(), vessel_type, grt, dwt: 0, loa: 0, max_draft: 0 })
+        body: JSON.stringify({ imo, name, flag, vessel_type, grt, dwt: 0, loa: 0, max_draft: 0 })
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) { alert("Gagal: " + (data.error || "Terjadi kesalahan")); return; }
+      closeVesselModal();
       await loadMasterData();
       openNewPortCallModal();
       document.getElementById('modal-vessel-select').value = data.imo;
@@ -788,23 +1041,148 @@
         body: JSON.stringify({ user: "Ibu Ratna (Finance Manager)" })
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) { alert("Gagal: " + (data.error || "Terjadi kesalahan")); return; }
+      if (!res.ok) {
+        // Server menyertakan daftar item yang menghalangi (sengketa OPEN
+        // / FDA belum diisi) — tampilkan supaya user tahu apa yang kurang.
+        const daftar = (data.blockers && data.blockers.length)
+          ? "\nYang masih menghalangi:\n- " + data.blockers.join("\n- ") : "";
+        alert("Gagal: " + (data.error || "Terjadi kesalahan") + daftar);
+        return;
+      }
       selectPortCall(activePortCallId);
     }
 
-    async function openDisputeModal(disbursementId) {
-      const amt = prompt("Masukkan nilai sengketa FDA (IDR):", "3200000");
-      if (!amt) return;
-      const reason = prompt("Masukkan alasan sanggahan Principal:", "Klaim tarif tunda melebihi estimasi awal tanpa persetujuan");
-      if (!reason) return;
+    // -- Modal Ajukan Sengketa (ADR-0017): menggantikan prompt().
+    function openDisputeModal(disbursementId) {
+      const d = (currentData.disbursements || []).find(x => x.id === disbursementId);
+      document.getElementById('new-dsp-id').value = disbursementId;
+      document.getElementById('new-dsp-label').innerText = d ? `${d.item_name} — PDA Rp ${Number(d.pda_estimate).toLocaleString('id-ID')}` : '';
+      document.getElementById('new-dsp-amount').value = '';
+      document.getElementById('new-dsp-reason').value = '';
+      document.getElementById('modal-dispute').style.display = 'flex';
+    }
+    function closeDisputeModal() { document.getElementById('modal-dispute').style.display = 'none'; }
 
+    async function submitDispute() {
+      const disbursement_id = document.getElementById('new-dsp-id').value;
+      const disputed_amount = parseFloat(document.getElementById('new-dsp-amount').value) || 0;
+      const reason = document.getElementById('new-dsp-reason').value.trim();
+      if (!disputed_amount || disputed_amount <= 0) { alert("Nilai sengketa (IDR) wajib diisi dan lebih dari 0!"); return; }
+      if (!reason) { alert("Alasan sanggahan Principal wajib diisi!"); return; }
       const res = await fetch(`/api/port-calls/${activePortCallId}/dispute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ disbursement_id: disbursementId, disputed_amount: amt, reason })
+        body: JSON.stringify({ disbursement_id, disputed_amount, reason })
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { alert("Gagal: " + (data.error || "Terjadi kesalahan")); return; }
+      closeDisputeModal();
+      selectPortCall(activePortCallId);
+    }
+
+    // -- Modal Selesaikan Sengketa (ADR-0017): satu-satunya perubahan
+    // yang tetap diizinkan setelah port call CLOSED (status final:
+    // ACCEPTED_REVISED atau REJECTED_FINAL).
+    function openResolveDisputeModal(disputeId) {
+      const dp = (currentData.disputes || []).find(x => x.id === disputeId);
+      if (!dp) return;
+      document.getElementById('res-dsp-id').value = disputeId;
+      document.getElementById('res-dsp-label').innerText = `${dp.item_name} — sengketa Rp ${Number(dp.disputed_amount).toLocaleString('id-ID')} (${dp.status})`;
+      document.getElementById('res-dsp-status').value = 'ACCEPTED_REVISED';
+      document.getElementById('res-dsp-notes').value = '';
+      document.getElementById('modal-resolve-dispute').style.display = 'flex';
+    }
+    function closeResolveDisputeModal() { document.getElementById('modal-resolve-dispute').style.display = 'none'; }
+
+    async function submitResolveDispute() {
+      const id = document.getElementById('res-dsp-id').value;
+      const status = document.getElementById('res-dsp-status').value;
+      const notes = document.getElementById('res-dsp-notes').value.trim();
+      const res = await fetch(`/api/disputes/${id}/resolve`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status, notes })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert("Gagal: " + (data.error || "Terjadi kesalahan")); return; }
+      closeResolveDisputeModal();
+      selectPortCall(activePortCallId);
+    }
+
+    // -- Modal Koreksi Milestone (ADR-0017): waktu bisa dikoreksi,
+    // status tidak ditarik mundur (server yang menegakkan).
+    function openEditMilestoneModal(id) {
+      const m = (currentData.milestones || []).find(x => x.id === id);
+      if (!m) return;
+      document.getElementById('edit-ms-id').value = m.id;
+      document.getElementById('edit-ms-label').innerText = `${m.milestone_code} — tercatat ${m.event_time}`;
+      document.getElementById('edit-ms-time').value = m.event_time;
+      document.getElementById('edit-ms-remarks').value = m.remarks || '';
+      document.getElementById('modal-edit-milestone').style.display = 'flex';
+    }
+    function closeEditMilestoneModal() { document.getElementById('modal-edit-milestone').style.display = 'none'; }
+
+    async function submitEditMilestone() {
+      const id = document.getElementById('edit-ms-id').value;
+      const event_time = document.getElementById('edit-ms-time').value.trim();
+      const remarks = document.getElementById('edit-ms-remarks').value.trim();
+      if (!event_time) { alert("Waktu milestone wajib diisi!"); return; }
+      const res = await fetch(`/api/milestones/${id}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event_time, remarks })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert("Gagal: " + (data.error || "Terjadi kesalahan")); return; }
+      closeEditMilestoneModal();
+      if (data.note) alert(data.note);
+      selectPortCall(activePortCallId);
+    }
+
+    // -- Modal Koreksi ETA/ETD/Muatan (ADR-0017): tenggat RKSP & SPB
+    // dihitung ulang dari nilai baru, perubahan masuk audit.
+    function openEditPortCallModal() {
+      if (!currentData) return;
+      document.getElementById('edit-pc-eta').value = (currentData.eta || '').replace(' ', 'T').slice(0, 16);
+      document.getElementById('edit-pc-etd').value = (currentData.etd || '').replace(' ', 'T').slice(0, 16);
+      document.getElementById('edit-pc-cargo').value = currentData.cargo_name || '';
+      document.getElementById('edit-pc-tonnage').value = currentData.cargo_tonnage || '';
+      document.getElementById('modal-edit-pc').style.display = 'flex';
+    }
+    function closeEditPortCallModal() { document.getElementById('modal-edit-pc').style.display = 'none'; }
+
+    async function submitEditPortCall() {
+      const eta = document.getElementById('edit-pc-eta').value.replace('T', ' ');
+      const etd = document.getElementById('edit-pc-etd').value.replace('T', ' ');
+      const cargo_name = document.getElementById('edit-pc-cargo').value.trim();
+      const cargo_tonnage = parseFloat(document.getElementById('edit-pc-tonnage').value);
+      if (!eta) { alert("ETA wajib diisi!"); return; }
+      const res = await fetch(`/api/port-calls/${activePortCallId}/update`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ eta, etd: etd || null, cargo_name, cargo_tonnage })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert("Gagal: " + (data.error || "Terjadi kesalahan")); return; }
+      closeEditPortCallModal();
+      selectPortCall(activePortCallId);
+      loadPortCalls();
+    }
+
+    // -- Simpan Parameter Charter Party (ADR-0017).
+    async function saveCharterParty() {
+      const body = {
+        charterer_name: document.getElementById('cp-charterer').value.trim(),
+        loading_rate_per_day: parseFloat(document.getElementById('cp-rate').value),
+        laytime_terms: document.getElementById('cp-terms').value,
+        demurrage_usd_per_day: parseFloat(document.getElementById('cp-demurrage').value),
+        despatch_usd_per_day: parseFloat(document.getElementById('cp-despatch').value),
+        nor_notice_hours: parseFloat(document.getElementById('cp-notice').value)
+      };
+      const res = await fetch(`/api/port-calls/${activePortCallId}/charter-party`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert("Gagal: " + (data.error || "Terjadi kesalahan")); return; }
+      alert("Parameter fixture tersimpan — hitung laytime memakai angka ini.");
       selectPortCall(activePortCallId);
     }
 
@@ -1028,6 +1406,7 @@
       const res = await fetch('/api/me');
       if (!res.ok) { location.reload(); return; }
       const me = await res.json();
+      currentRole = me.role;
       document.getElementById('session-user').textContent = `${me.username} (${me.role})`;
     }
 
@@ -1071,7 +1450,7 @@
       <div class="form-group">
         <label>Pilih Kapal (Master Vessels):</label>
         <select id="modal-vessel-select"></select>
-        <button class="btn btn-outline" style="padding: 4px 10px; font-size: 11px; margin-top: 6px;" onclick="submitNewVessel()">+ Tambah Kapal Master</button>
+        <button class="btn btn-outline" style="padding: 4px 10px; font-size: 11px; margin-top: 6px;" onclick="openVesselModal()">+ Tambah Kapal Master</button>
       </div>
 
       <div class="grid-modal-form">
@@ -1211,6 +1590,279 @@
       <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;">
         <button class="btn btn-outline" onclick="closeNewClearanceModal()">Batal</button>
         <button class="btn btn-cyan" onclick="submitNewClearance()">Simpan Dokumen</button>
+      </div>
+    </div>
+  </div>
+  <!-- Modal Terbit SPB (ADR-0017): form, bukan prompt. Daftar blocker
+       merah sebelum tombol ditekan; tombol nonaktif bila ada blocker. -->
+  <div id="modal-spb" class="modal-overlay">
+    <div class="card modal-card" style="background: #0f172a; border: 1px solid var(--cyan); box-shadow: 0 10px 25px rgba(0,0,0,0.6);">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h3 style="margin: 0; color: var(--cyan);">📋 Terbitkan SPB (PM 28/2022)</h3>
+        <button class="btn btn-outline" style="padding: 2px 8px; font-size: 13px;" onclick="closeSPBModal()">✕</button>
+      </div>
+      <div class="form-group">
+        <label>Prasyarat (cek dari checklist):</label>
+        <div id="spb-blockers-list" style="font-size: 12px; background: rgba(0,0,0,0.2); padding: 10px; border-radius: 4px;">Memeriksa…</div>
+        <small style="color: var(--text-muted); font-size: 11px;">Bila SPB masih berlaku, terbit ulang ditolak — nomor lama tersimpan di riwayat.</small>
+      </div>
+      <div class="form-group">
+        <label>Nomor SPB resmi:</label>
+        <input type="text" id="spb-doc-number" placeholder="Contoh: SPB.IDTPP.2026.11.0042">
+      </div>
+      <div class="form-group">
+        <label>Waktu Terbit (waktu lokal, berlaku 24 jam):</label>
+        <input type="datetime-local" id="spb-issued-at">
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;">
+        <button class="btn btn-outline" onclick="closeSPBModal()">Batal</button>
+        <button class="btn btn-cyan" id="btn-submit-spb" onclick="submitSPB()">Terbitkan SPB</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Tambah Biaya PDA/FDA (ADR-0017) -->
+  <div id="modal-disbursement" class="modal-overlay">
+    <div class="card modal-card" style="background: #0f172a; border: 1px solid var(--cyan); box-shadow: 0 10px 25px rgba(0,0,0,0.6);">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h3 style="margin: 0; color: var(--cyan);">💰 Tambah Item Biaya PDA/FDA</h3>
+        <button class="btn btn-outline" style="padding: 2px 8px; font-size: 13px;" onclick="closeDisbursementModal()">✕</button>
+      </div>
+      <div class="form-group">
+        <label>Kategori:</label>
+        <select id="new-dis-category">
+          <option value="PNBP_KEMENHUB">PNBP_KEMENHUB</option>
+          <option value="BUP_PELINDO">BUP_PELINDO</option>
+          <option value="CIGP_INSTANSI">CIGP_INSTANSI</option>
+          <option value="HUSBANDRY">HUSBANDRY</option>
+          <option value="AGENCY_FEE">AGENCY_FEE</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Nama Item Biaya:</label>
+        <input type="text" id="new-dis-item" placeholder="Misal: Pasokan Air Tawar">
+      </div>
+      <div class="grid-2" style="gap: 8px;">
+        <div class="form-group">
+          <label>Estimasi PDA (IDR):</label>
+          <input type="number" id="new-dis-pda" placeholder="0">
+        </div>
+        <div class="form-group">
+          <label>Realisasi FDA (IDR, 0 bila belum ada):</label>
+          <input type="number" id="new-dis-fda" value="0">
+        </div>
+      </div>
+      <div class="grid-2" style="gap: 8px;">
+        <div class="form-group">
+          <label>Kode Billing Simponi:</label>
+          <input type="text" id="new-dis-billing" placeholder="Kosongkan bila belum ada">
+        </div>
+        <div class="form-group">
+          <label>NTPN:</label>
+          <input type="text" id="new-dis-ntpn" placeholder="Kosongkan bila belum ada">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Nomor Invoice / Billing:</label>
+        <input type="text" id="new-dis-invoice" placeholder="Kosongkan bila belum ada">
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;">
+        <button class="btn btn-outline" onclick="closeDisbursementModal()">Batal</button>
+        <button class="btn btn-cyan" onclick="submitDisbursement()">Simpan Item</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Lengkapi FDA (ADR-0017): ubah baris PDA yang sudah ada. -->
+  <div id="modal-edit-disbursement" class="modal-overlay">
+    <div class="card modal-card" style="background: #0f172a; border: 1px solid var(--cyan); box-shadow: 0 10px 25px rgba(0,0,0,0.6);">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h3 style="margin: 0; color: var(--cyan);">✏️ Lengkapi FDA</h3>
+        <button class="btn btn-outline" style="padding: 2px 8px; font-size: 13px;" onclick="closeEditDisbursementModal()">✕</button>
+      </div>
+      <input type="hidden" id="edit-dis-id">
+      <div class="form-group">
+        <label>Item:</label>
+        <div id="edit-dis-label" style="font-size: 13px; color: var(--text-muted);">—</div>
+        <small style="color: var(--text-muted); font-size: 11px;">PDA tidak berubah — yang dilengkapi hanya realisasi dan bukti bayar.</small>
+      </div>
+      <div class="form-group">
+        <label>Realisasi FDA (IDR):</label>
+        <input type="number" id="edit-dis-fda">
+      </div>
+      <div class="grid-2" style="gap: 8px;">
+        <div class="form-group">
+          <label>Kode Billing Simponi:</label>
+          <input type="text" id="edit-dis-billing">
+        </div>
+        <div class="form-group">
+          <label>NTPN:</label>
+          <input type="text" id="edit-dis-ntpn">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Nomor Invoice / Billing:</label>
+        <input type="text" id="edit-dis-invoice">
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;">
+        <button class="btn btn-outline" onclick="closeEditDisbursementModal()">Batal</button>
+        <button class="btn btn-cyan" onclick="submitEditDisbursement()">Simpan Perubahan</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Ajukan Sengketa (ADR-0017) -->
+  <div id="modal-dispute" class="modal-overlay">
+    <div class="card modal-card" style="background: #0f172a; border: 1px solid var(--cyan); box-shadow: 0 10px 25px rgba(0,0,0,0.6);">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h3 style="margin: 0; color: var(--cyan);">⚖️ Ajukan Sengketa FDA</h3>
+        <button class="btn btn-outline" style="padding: 2px 8px; font-size: 13px;" onclick="closeDisputeModal()">✕</button>
+      </div>
+      <input type="hidden" id="new-dsp-id">
+      <div class="form-group">
+        <label>Item:</label>
+        <div id="new-dsp-label" style="font-size: 13px; color: var(--text-muted);">—</div>
+      </div>
+      <div class="form-group">
+        <label>Nilai Sengketa (IDR):</label>
+        <input type="number" id="new-dsp-amount" placeholder="Misal: 3200000">
+      </div>
+      <div class="form-group">
+        <label>Alasan Sanggahan Principal:</label>
+        <input type="text" id="new-dsp-reason" placeholder="Misal: Klaim tarif tunda melebihi estimasi awal tanpa persetujuan">
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;">
+        <button class="btn btn-outline" onclick="closeDisputeModal()">Batal</button>
+        <button class="btn btn-cyan" onclick="submitDispute()">Ajukan Sengketa</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Selesaikan Sengketa (ADR-0017) -->
+  <div id="modal-resolve-dispute" class="modal-overlay">
+    <div class="card modal-card" style="background: #0f172a; border: 1px solid var(--cyan); box-shadow: 0 10px 25px rgba(0,0,0,0.6);">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h3 style="margin: 0; color: var(--cyan);">✅ Selesaikan Sengketa</h3>
+        <button class="btn btn-outline" style="padding: 2px 8px; font-size: 13px;" onclick="closeResolveDisputeModal()">✕</button>
+      </div>
+      <input type="hidden" id="res-dsp-id">
+      <div class="form-group">
+        <label>Sengketa:</label>
+        <div id="res-dsp-label" style="font-size: 13px; color: var(--text-muted);">—</div>
+      </div>
+      <div class="form-group">
+        <label>Keputusan:</label>
+        <select id="res-dsp-status">
+          <option value="ACCEPTED_REVISED">ACCEPTED_REVISED — Principal terima nilai revisi</option>
+          <option value="REJECTED_FINAL">REJECTED_FINAL — Sengketa ditolak, nilai FDA final</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Catatan Resolusi:</label>
+        <input type="text" id="res-dsp-notes" placeholder="Misal: Disepakati Rp 2.800.000, bukti via email">
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;">
+        <button class="btn btn-outline" onclick="closeResolveDisputeModal()">Batal</button>
+        <button class="btn btn-cyan" onclick="submitResolveDispute()">Simpan Resolusi</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Tambah Kapal Master (ADR-0017) -->
+  <div id="modal-vessel" class="modal-overlay">
+    <div class="card modal-card" style="background: #0f172a; border: 1px solid var(--cyan); box-shadow: 0 10px 25px rgba(0,0,0,0.6);">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h3 style="margin: 0; color: var(--cyan);">🚢 Tambah Kapal Master</h3>
+        <button class="btn btn-outline" style="padding: 2px 8px; font-size: 13px;" onclick="closeVesselModal()">✕</button>
+      </div>
+      <div class="form-group">
+        <label>IMO (wajib):</label>
+        <input type="text" id="new-vsl-imo" placeholder="Misal: 9812345">
+      </div>
+      <div class="form-group">
+        <label>Nama Kapal:</label>
+        <input type="text" id="new-vsl-name" placeholder="Misal: MV. CONTOH">
+      </div>
+      <div class="grid-2" style="gap: 8px;">
+        <div class="form-group">
+          <label>Bendera (kode negara):</label>
+          <input type="text" id="new-vsl-flag" value="ID">
+        </div>
+        <div class="form-group">
+          <label>Jenis Kapal:</label>
+          <input type="text" id="new-vsl-type" value="Bulk Carrier">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>GRT:</label>
+        <input type="number" id="new-vsl-grt" placeholder="Misal: 10000">
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;">
+        <button class="btn btn-outline" onclick="closeVesselModal()">Batal</button>
+        <button class="btn btn-cyan" onclick="submitNewVessel()">Simpan Kapal</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Koreksi ETA/ETD/Muatan (ADR-0017) -->
+  <div id="modal-edit-pc" class="modal-overlay">
+    <div class="card modal-card" style="background: #0f172a; border: 1px solid var(--cyan); box-shadow: 0 10px 25px rgba(0,0,0,0.6);">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h3 style="margin: 0; color: var(--cyan);">✏️ Ubah ETA / ETD / Muatan</h3>
+        <button class="btn btn-outline" style="padding: 2px 8px; font-size: 13px;" onclick="closeEditPortCallModal()">✕</button>
+      </div>
+      <div class="grid-2" style="gap: 8px;">
+        <div class="form-group">
+          <label>ETA (kedatangan):</label>
+          <input type="datetime-local" id="edit-pc-eta">
+        </div>
+        <div class="form-group">
+          <label>ETD (keberangkatan):</label>
+          <input type="datetime-local" id="edit-pc-etd">
+        </div>
+      </div>
+      <div class="grid-2" style="gap: 8px;">
+        <div class="form-group">
+          <label>Jenis Muatan:</label>
+          <input type="text" id="edit-pc-cargo">
+        </div>
+        <div class="form-group">
+          <label>Tonase (MT):</label>
+          <input type="number" id="edit-pc-tonnage">
+        </div>
+      </div>
+      <p style="font-size: 11px; color: var(--text-muted);">Tenggat RKSP (ETA−24 jam) dan permohonan SPB (ETD−4 jam) dihitung ulang otomatis; perubahan dicatat di audit.</p>
+      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;">
+        <button class="btn btn-outline" onclick="closeEditPortCallModal()">Batal</button>
+        <button class="btn btn-cyan" onclick="submitEditPortCall()">Simpan Perubahan</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Koreksi Milestone (ADR-0017) -->
+  <div id="modal-edit-milestone" class="modal-overlay">
+    <div class="card modal-card" style="background: #0f172a; border: 1px solid var(--cyan); box-shadow: 0 10px 25px rgba(0,0,0,0.6);">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h3 style="margin: 0; color: var(--cyan);">🕐 Koreksi Waktu Milestone</h3>
+        <button class="btn btn-outline" style="padding: 2px 8px; font-size: 13px;" onclick="closeEditMilestoneModal()">✕</button>
+      </div>
+      <input type="hidden" id="edit-ms-id">
+      <div class="form-group">
+        <label>Milestone:</label>
+        <div id="edit-ms-label" style="font-size: 13px; color: var(--text-muted);">—</div>
+        <small style="color: var(--text-muted); font-size: 11px;">Koreksi waktu tetap boleh — status kapal tidak ditarik mundur.</small>
+      </div>
+      <div class="form-group">
+        <label>Waktu (YYYY-MM-DD HH:MM):</label>
+        <input type="text" id="edit-ms-time" placeholder="2026-11-02 10:30">
+      </div>
+      <div class="form-group">
+        <label>Keterangan:</label>
+        <input type="text" id="edit-ms-remarks" placeholder="Misal: Koreksi jam aktual dari log pandu">
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;">
+        <button class="btn btn-outline" onclick="closeEditMilestoneModal()">Batal</button>
+        <button class="btn btn-cyan" onclick="submitEditMilestone()">Simpan Koreksi</button>
       </div>
     </div>
   </div>

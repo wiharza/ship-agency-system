@@ -25,7 +25,7 @@ TABLES = [
     "master_ports", "master_terminals", "master_vessels", "master_branches",
     "master_principals", "port_calls", "port_call_charter_parties", "clearances",
     "milestones", "sof_stoppages", "disbursements", "fda_disputes", "audit_logs",
-    "users",
+    "users", "spb_history", "laytime_calculations",
 ]
 
 
@@ -499,6 +499,46 @@ def init_db():
             resolution_notes TEXT,
             FOREIGN KEY (port_call_id) REFERENCES port_calls (id),
             FOREIGN KEY (disbursement_id) REFERENCES disbursements (id)
+        )
+        """)
+
+        # Riwayat SPB yang sudah digantikan (ADR-0017): SPB berlaku 24 jam
+        # (PM 28/2022 Ps 9) — bila kedaluwarsa lalu diterbitkan ulang, nomor
+        # lama TIDAK boleh hilang begitu saja. Baris clearance dan port_calls
+        # hanya menyimpan SPB yang sedang berlaku; nomor sebelumnya
+        # dicatat di sini (terbit, kedaluwarsa, kapan digantikan, oleh siapa).
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS spb_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            port_call_id TEXT NOT NULL,
+            doc_number TEXT,
+            issued_at TEXT NOT NULL,
+            expiry_at TEXT,
+            superseded_at TEXT NOT NULL,
+            superseded_by TEXT NOT NULL,
+            FOREIGN KEY (port_call_id) REFERENCES port_calls (id)
+        )
+        """)
+
+        # Hasil kalkulasi laytime yang tersimpan (ADR-0017): hitung laytime
+        # bukan lagi angka sekali lihat di layar — hasil terakhir disimpan
+        # supaya shift berikutnya (dan handover) membawanya, lengkap
+        # dengan input NOR/mulai/selesai dan siapa menghitungnya.
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS laytime_calculations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            port_call_id TEXT NOT NULL,
+            nor_tendered_time TEXT,
+            commenced_time TEXT,
+            completed_time TEXT,
+            terms TEXT,
+            allowed_days REAL,
+            used_days REAL,
+            claim_type TEXT,
+            amount_usd REAL,
+            calculated_by TEXT,
+            calculated_at TEXT NOT NULL,
+            FOREIGN KEY (port_call_id) REFERENCES port_calls (id)
         )
         """)
 

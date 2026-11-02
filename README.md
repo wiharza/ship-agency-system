@@ -36,6 +36,9 @@ yang gagal diam-diam (ADR-0014). Sign-off ops juga menampilkan
 daftar dokumen yang belum APPROVED; input waktu/angka yang rusak
 dijawab 400 yang bisa dibaca, bukan 500 (ADR-0015).
 
+Server lokal multi-threaded (ADR-0013): satu koneksi yang menggantung
+tidak lagi memblokir request lain.
+
 Server menjalankan `init_db()` + `seed_sample_data()` saat start. Data contoh
 yang ter-seed: 4 pelabuhan, 15 terminal, 2 cabang, 2 principal, 2 kapal, dan
 port call contoh **PC-2026-JKT-0001** (MV. PACIFIC GLORY, kapal asing,
@@ -299,6 +302,20 @@ lokal, tanpa query DB per request).
   sampai kanal resmi tersedia (ADR-0004).
 - **Tidak ada notifikasi** email/Telegram, tidak ada pengingat tenggat
   otomatis (tenggat hanya dihitung & ditampilkan saat checklist dibuka).
+  Pengganti untuk tim kecil: **papan shift** di atas daftar port call
+  (dokumen lewat tenggat, SPB sisa < 6 jam, sandar tapi SPB belum
+  diterbitkan, sengketa OPEN) — ADR-0017.
+- **Status hanya maju, arsip terkunci (ADR-0017):** milestone tidak lagi
+  menarik status kapal mundur (PRE_ARRIVAL → ARRIVED → BERTHED →
+  DEPARTED); setelah `CLOSED`, milestone/dokumen/biaya/SPB tidak bisa
+  diubah (kecuali finance menyelesaikan sengketa yang sudah terbuka).
+  SPB yang masih berlaku tidak bisa diterbitkan ulang; nomor lama
+  tersimpan di riwayat SPB.
+- **Laytime tersimpan (ADR-0017):** parameter charter party diisi dari
+  recap fixture (bukan angka tetap); hitung laytime menyimpan NOR,
+  mulai, dan selesai muat sebagai milestone + hasil terakhir, sehingga
+  handover shift membawanya. Koreksi ETA/ETD/muatan menghitung ulang
+  tenggat RKSP (ETA−24 jam) dan permohonan SPB (ETD−4 jam).
 - Data master contoh (kapal/principal/cabang) dan nomor dokumen contoh di
   seed **harus diganti** dengan data asli perusahaan sebelum dipakai produksi.
 - Akun portal resmi (Inaportnet, INSW, CEISA, Simkapel, SINKARKES) tetap

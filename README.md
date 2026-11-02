@@ -36,6 +36,9 @@ yang gagal diam-diam (ADR-0014). Sign-off ops juga menampilkan
 daftar dokumen yang belum APPROVED; input waktu/angka yang rusak
 dijawab 400 yang bisa dibaca, bukan 500 (ADR-0015).
 
+Server lokal multi-threaded (ADR-0013): satu koneksi yang menggantung
+tidak lagi memblokir request lain.
+
 Server menjalankan `init_db()` + `seed_sample_data()` saat start. Data contoh
 yang ter-seed: 4 pelabuhan, 15 terminal, 2 cabang, 2 principal, 2 kapal, dan
 port call contoh **PC-2026-JKT-0001** (MV. PACIFIC GLORY, kapal asing,

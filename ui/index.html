@@ -755,7 +755,14 @@
         body: JSON.stringify({ user: "Capt. Hadi (Doc/Ops Lead)" })
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) { alert("Gagal: " + (data.error || "Terjadi kesalahan")); return; }
+      if (!res.ok) {
+        // Server menyertakan daftar dokumen yang belum APPROVED
+        // (ADR-0015) — tampilkan supaya user tahu apa yang kurang.
+        const daftar = (data.blockers && data.blockers.length)
+          ? "\nDokumen belum lengkap:\n- " + data.blockers.join("\n- ") : "";
+        alert("Gagal: " + (data.error || "Terjadi kesalahan") + daftar);
+        return;
+      }
       selectPortCall(activePortCallId);
     }
 

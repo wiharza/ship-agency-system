@@ -580,6 +580,48 @@ def test_integration():
             assert "angka" in body.get("error", ""), f"Respons 400 dispute harus menjelaskan, dapat {body}"
         print("[TEST 22/22] Pesan error: close-ops menyebut alasan, dispute non-angka 400 JSON.")
 
+        # 23. Test celah server dari audit pesan error (ADR-0015):
+        # close-ops menyebut dokumen yang belum APPROVED; laytime waktu
+        # salah jadi 400 (bukan 500); dispute menolak item milik port
+        # call lain; stoppage menolak input rusak dengan 400/404.
+        with urllib.request.urlopen(_post("/api/port-calls",
+                {"vessel_imo": "9876543", "port_code": "IDTPP",
+                 "terminal_name": "JICT (Jakarta Int. Container Terminal)",
+                 "cargo_name": "Batu Bara", "cargo_tonnage": 50000,
+                 "eta": "2026-11-12 08:00", "vessel_category": "FOREIGN"})) as res:
+            assert res.status == 200
+            pc3 = json.loads(res.read().decode("utf-8"))["port_call_id"]
+        try:
+            urllib.request.urlopen(_post(f"/api/port-calls/{pc3}/close-ops", {"user": "Capt. Hadi"}))
+            assert False, "close-ops pc3 tanpa SPB harus ditolak 400"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+            body = json.loads(e.read().decode("utf-8"))
+            assert body.get("blockers"), f"Respons 400 close-ops harus berisi daftar blockers, dapat {body}"
+            assert any("Free Pratique" in b for b in body["blockers"]), f"Blockers harus menyebut Free Pratique, dapat {body['blockers']}"
+        _expect_400("/api/port-calls/PC-2026-JKT-0001/laytime/calculate",
+                    {"nor_tendered_time": "12-11-2026 08:00", "commenced_time": "2026-11-12 14:00",
+                     "completed_time": "2026-11-13 14:00"}, "Waktu tidak valid")
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/PC-2026-JKT-0001") as res:
+            det_jkt = json.loads(res.read().decode("utf-8"))
+        dis_lain = det_jkt["disbursements"][0]["id"]
+        _expect_400(f"/api/port-calls/{pc3}/dispute",
+                    {"disbursement_id": dis_lain, "disputed_amount": 1000000, "reason": "tes"},
+                    "tidak ditemukan pada port call ini")
+        _expect_400(f"/api/port-calls/{pc3}/stoppage",
+                    {"category": "RAIN", "start_time": "2026-11-12 10:00", "end_time": "2026-11-12 12:00",
+                     "percentage_counted": "rusak", "remarks": "tes"}, "harus angka")
+        _expect_400(f"/api/port-calls/{pc3}/stoppage",
+                    {"category": "RAIN", "start_time": "12 Nov 2026", "end_time": "2026-11-12 12:00",
+                     "percentage_counted": 0, "remarks": "tes"}, "tidak valid")
+        _expect_400(f"/api/port-calls/{pc3}/stoppage",
+                    {"category": "HUJAN", "start_time": "2026-11-12 10:00", "end_time": "2026-11-12 12:00",
+                     "percentage_counted": 0, "remarks": "tes"}, "tidak dikenal")
+        _expect_status(ops2, "/api/port-calls/PC-TIDAK-ADA/stoppage",
+                       {"category": "RAIN", "start_time": "2026-11-12 10:00", "end_time": "2026-11-12 12:00",
+                        "percentage_counted": 0, "remarks": "tes"}, 404, "tidak ditemukan")
+        print("[TEST 23/23] ADR-0015: blockers close-ops, laytime 400, dispute milik port call, stoppage tervalidasi.")
+
         print("\nSEMUA INTEGRATION TEST LULUS (100% VERIFIED)!")
 
     finally:

@@ -906,6 +906,40 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             if len(parts) == 4 and parts[3] == "stoppage":
                 pc_id = parts[2]
                 conn = get_db()
+                c = conn.cursor()
+                c.execute("SELECT id FROM port_calls WHERE id = ?", (pc_id,))
+                if not c.fetchone():
+                    conn.close()
+                    self.send_json({"error": "Port Call tidak ditemukan"}, status=404)
+                    return
+                # Validasi SEBELUM insert (ADR-0015): sebelumnya nilai
+                # rusak langsung melempar ke 500/koneksi putus — float()
+                # gagal, CHECK kategori gagal, FK gagal, dan waktu salah
+                # format tersimpan diam-diam lalu merusak hitung laytime.
+                category = payload.get("category", "OTHER")
+                if category not in ("RAIN", "WEATHER_OTHER", "MEAL_BREAK", "SHIFT_CHANGE",
+                                    "CRANE_BREAKDOWN_SHORE", "WINCH_BREAKDOWN_SHIP",
+                                    "CARGO_WAITING", "SHIFTING_BERTH", "OTHER"):
+                    conn.close()
+                    self.send_json({"error": f"Kategori jeda tidak dikenal: {category}"}, status=400)
+                    return
+                try:
+                    pct = float(payload.get("percentage_counted", 0))
+                except (TypeError, ValueError):
+                    conn.close()
+                    self.send_json({"error": "Persentase jeda harus angka (0-100)"}, status=400)
+                    return
+                for _field, _val in (("start_time", payload.get("start_time")), ("end_time", payload.get("end_time"))):
+                    if not _val:
+                        conn.close()
+                        self.send_json({"error": f"Waktu {_field} wajib diisi (format YYYY-MM-DD HH:MM)"}, status=400)
+                        return
+                    try:
+                        parse_iso(_val)
+                    except Exception as exc:
+                        conn.close()
+                        self.send_json({"error": f"Waktu {_field} tidak valid: {exc}. Pakai format YYYY-MM-DD HH:MM."}, status=400)
+                        return
                 with conn:
                     conn.execute("""
                     INSERT INTO sof_stoppages (port_call_id, start_time, end_time, category, percentage_counted, remarks)
@@ -914,8 +948,8 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                         pc_id,
                         payload.get("start_time"),
                         payload.get("end_time"),
-                        payload.get("category", "OTHER"),
-                        float(payload.get("percentage_counted", 0)),
+                        category,
+                        pct,
                         payload.get("remarks", "")
                     ))
                 conn.close()
@@ -1068,7 +1102,15 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     "despatch_rate_per_day": cp["despatch_usd_per_day"],
                     "nor_notice_hours": cp["nor_notice_hours"]
                 })
-                result = calc.calculate(nor_str, comm_str, comp_str, stoppages)
+                try:
+                    result = calc.calculate(nor_str, comm_str, comp_str, stoppages)
+                except ValueError as exc:
+                    # Waktu salah format sebelumnya melempar ke 500
+                    # ("Kesalahan internal server" di WSGI; koneksi putus
+                    # tanpa respons di server lokal) — kini 400 yang
+                    # menyebut format yang benar (ADR-0015).
+                    self.send_json({"error": f"Waktu tidak valid: {exc}. Pakai format YYYY-MM-DD HH:MM (contoh: 2026-11-12 08:00) — periksa NOR, mulai/selesai bongkar, dan jeda SOF."}, status=400)
+                    return
                 self.send_json(result)
                 return
 
@@ -1099,17 +1141,27 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     conn.close()
                     self.send_json({"error": f"Otorisasi 1 sudah disahkan {pc['ops_closed_at']} — tidak bisa sign-off dua kali"}, status=400)
                     return
+                # Daftar dokumen yang belum APPROVED — supaya penolakan
+                # menyebut DOKUMEN MANA yang belum lengkap (ADR-0015),
+                # bukan hanya "SPB belum terbit". Daftar yang sama dengan
+                # gate SPB (clearance_spb_gate): prasyarat wajib + item
+                # bersyarat yang sudah ada tapi belum APPROVED.
+                c.execute("SELECT * FROM clearances WHERE port_call_id = ?", (pc_id,))
+                blockers, _ = clearance_spb_gate([dict(r) for r in c.fetchall()])
                 if not pc["spb_issued_at"]:
                     conn.close()
-                    self.send_json({"error": "SPB belum terbit — kapal belum boleh berlayar, ops tidak bisa ditutup (PM 28/2022)"}, status=400)
+                    self.send_json({"error": "SPB belum terbit — kapal belum boleh berlayar, ops tidak bisa ditutup (PM 28/2022)",
+                                    "blockers": blockers}, status=400)
                     return
                 if pc["spb_expiry_at"] and datetime.now() > parse_iso(pc["spb_expiry_at"]):
                     conn.close()
-                    self.send_json({"error": f"SPB sudah kedaluwarsa {pc['spb_expiry_at']} — terbitkan SPB baru sebelum menutup ops"}, status=400)
+                    self.send_json({"error": f"SPB sudah kedaluwarsa {pc['spb_expiry_at']} — terbitkan SPB baru sebelum menutup ops",
+                                    "blockers": blockers}, status=400)
                     return
                 if pc["status"] != "DEPARTED":
                     conn.close()
-                    self.send_json({"error": f"status kapal masih {pc['status']} — ops hanya bisa ditutup setelah kapal DEPARTED"}, status=400)
+                    self.send_json({"error": f"status kapal masih {pc['status']} — ops hanya bisa ditutup setelah kapal DEPARTED",
+                                    "blockers": blockers}, status=400)
                     return
                 with conn:
                     conn.execute("""
@@ -1167,6 +1219,21 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 deadline = (datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d")
 
                 conn = get_db()
+                c = conn.cursor()
+                c.execute("SELECT id FROM port_calls WHERE id = ?", (pc_id,))
+                if not c.fetchone():
+                    conn.close()
+                    self.send_json({"error": "Port Call tidak ditemukan"}, status=404)
+                    return
+                # Item biaya HARUS milik port call ini (ADR-0015):
+                # sebelumnya sengketa atas item port call lain diterima
+                # begitu saja (200) — data sengketa jadi salah alamat.
+                c.execute("SELECT id FROM disbursements WHERE id = ? AND port_call_id = ?",
+                          (disbursement_id, pc_id))
+                if not c.fetchone():
+                    conn.close()
+                    self.send_json({"error": "Item biaya tidak ditemukan pada port call ini — periksa kembali item PDA/FDA yang disengketakan"}, status=400)
+                    return
                 with conn:
                     conn.execute("""
                     INSERT INTO fda_disputes (port_call_id, disbursement_id, disputed_amount, principal_reason, deadline_date, status, resolution_notes)

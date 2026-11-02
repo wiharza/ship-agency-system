@@ -1015,6 +1015,47 @@
       document.getElementById('modal-vessel-select').value = data.imo;
     }
 
+    // -- Modal Tambah Pelabuhan Master (ADR-0021): sama polanya dengan
+    //    kapal — pelabuhan sebelumnya hanya bisa ditambah langsung di DB.
+    function openPortModal() {
+      document.getElementById('new-port-code').value = '';
+      document.getElementById('new-port-name').value = '';
+      document.getElementById('new-port-province').value = '';
+      document.getElementById('new-port-level').value = 'Kelas I';
+      document.getElementById('new-port-vts').value = '';
+      document.getElementById('new-port-draft').value = '';
+      document.getElementById('new-port-notes').value = '';
+      document.getElementById('modal-new-port').style.display = 'flex';
+    }
+    function closePortModal() { document.getElementById('modal-new-port').style.display = 'none'; }
+
+    async function submitNewPort() {
+      const code = document.getElementById('new-port-code').value.trim().toUpperCase();
+      const name = document.getElementById('new-port-name').value.trim();
+      const province = document.getElementById('new-port-province').value.trim();
+      const inaportnet_level = document.getElementById('new-port-level').value;
+      const vts_channel = document.getElementById('new-port-vts').value.trim();
+      const draftRaw = document.getElementById('new-port-draft').value.trim();
+      const notes = document.getElementById('new-port-notes').value.trim();
+      if (!code) { alert("Kode UN/LOCODE wajib diisi!"); return; }
+      if (code.length !== 5) { alert("Kode UN/LOCODE harus 5 karakter (2 huruf negara + 3 karakter lokasi), misal IDBLW."); return; }
+      if (!name) { alert("Nama pelabuhan wajib diisi!"); return; }
+      if (!province) { alert("Provinsi wajib diisi!"); return; }
+      const max_draft = draftRaw === '' ? null : parseFloat(draftRaw);
+      if (draftRaw !== '' && isNaN(max_draft)) { alert("Max draft harus angka!"); return; }
+      const res = await fetch('/api/master/ports', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code, name, province, inaportnet_level, vts_channel, max_draft, notes })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert("Gagal: " + (data.error || "Terjadi kesalahan")); return; }
+      closePortModal();
+      await loadMasterData();
+      openNewPortCallModal();
+      document.getElementById('modal-port-select').value = data.code;
+      onPortSelectChange();
+    }
+
     async function signOpsClosure() {
       if (!confirm("Konfirmasi pengesahan Otorisasi 1 (Operasional): Seluruh perizinan selesai & kapal telah berangkat?")) return;
       const res = await fetch(`/api/port-calls/${activePortCallId}/close-ops`, {
@@ -1435,6 +1476,7 @@
         <label>Pelabuhan (Pre-determined UN/LOCODE):</label>
         <select id="modal-port-select" onchange="onPortSelectChange()"></select>
         <small style="color: var(--text-muted); font-size: 11px;">Mencegah deviasi ejaan / typo kode Inaportnet & CIGP.</small>
+        <button class="btn btn-outline" style="padding: 4px 10px; font-size: 11px; margin-top: 6px;" onclick="openPortModal()">+ Tambah Pelabuhan</button>
       </div>
 
       <div class="form-group">
@@ -1802,6 +1844,59 @@
       <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;">
         <button class="btn btn-outline" onclick="closeVesselModal()">Batal</button>
         <button class="btn btn-cyan" onclick="submitNewVessel()">Simpan Kapal</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Tambah Pelabuhan Master (ADR-0021) -->
+  <div id="modal-new-port" class="modal-overlay">
+    <div class="card modal-card" style="background: #0f172a; border: 1px solid var(--cyan); box-shadow: 0 10px 25px rgba(0,0,0,0.6);">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h3 style="margin: 0; color: var(--cyan);">⚓ Tambah Pelabuhan Master</h3>
+        <button class="btn btn-outline" style="padding: 2px 8px; font-size: 13px;" onclick="closePortModal()">✕</button>
+      </div>
+      <div class="form-group">
+        <label>Kode UN/LOCODE (wajib, 5 karakter):</label>
+        <input type="text" id="new-port-code" maxlength="5" placeholder="Misal: IDBLW" style="text-transform: uppercase;">
+        <small style="color: var(--text-muted); font-size: 11px;">2 huruf kode negara + 3 karakter lokasi (UN/LOCODE).</small>
+      </div>
+      <div class="form-group">
+        <label>Nama Pelabuhan:</label>
+        <input type="text" id="new-port-name" placeholder="Misal: Belawan">
+      </div>
+      <div class="grid-2" style="gap: 8px;">
+        <div class="form-group">
+          <label>Provinsi:</label>
+          <input type="text" id="new-port-province" placeholder="Misal: Sumatera Utara">
+        </div>
+        <div class="form-group">
+          <label>Kelas Pelabuhan (Inaportnet):</label>
+          <select id="new-port-level">
+            <option value="Kelas Utama">Kelas Utama</option>
+            <option value="Kelas I" selected>Kelas I</option>
+            <option value="Kelas II">Kelas II</option>
+            <option value="Kelas III">Kelas III</option>
+            <option value="Kelas III (KUPP)">Kelas III (KUPP)</option>
+          </select>
+        </div>
+      </div>
+      <div class="grid-2" style="gap: 8px;">
+        <div class="form-group">
+          <label>Saluran VTS (opsional):</label>
+          <input type="text" id="new-port-vts" placeholder="Misal: VHF Ch 16">
+        </div>
+        <div class="form-group">
+          <label>Max Draft (m, opsional):</label>
+          <input type="number" id="new-port-draft" step="0.1" min="0" placeholder="Misal: 12">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Catatan (opsional):</label>
+        <input type="text" id="new-port-notes" placeholder="Misal: Pelabuhan utama Medan">
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;">
+        <button class="btn btn-outline" onclick="closePortModal()">Batal</button>
+        <button class="btn btn-cyan" onclick="submitNewPort()">Simpan Pelabuhan</button>
       </div>
     </div>
   </div>

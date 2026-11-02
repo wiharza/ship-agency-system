@@ -265,6 +265,16 @@ class _BadRequest(Exception):
     """Validasi input gagal — safety net mengubahnya menjadi 400 JSON."""
 
 CLEARANCE_STATUSES = ("PENDING", "SUBMITTED", "APPROVED", "REJECTED", "EXPIRED", "VOID")
+
+# Kelas pelabuhan Inaportnet (ADR-0021): kunci = bentuk normalisasi
+# (upper), nilai = bentuk kanonik yang disimpan (sesuai seed).
+INAPORTNET_LEVELS = {
+    "KELAS UTAMA": "Kelas Utama",
+    "KELAS I": "Kelas I",
+    "KELAS II": "Kelas II",
+    "KELAS III": "Kelas III",
+    "KELAS III (KUPP)": "Kelas III (KUPP)",
+}
 CLEARANCE_AGENCIES = ("INAPORTNET_SIMPADU", "INAPORTNET_SPS", "BEA_CUKAI", "IMIGRASI", "KARANTINA_KESEHATAN", "BARANTIN", "BUP_PELINDO")
 MILESTONE_CODES = ("EOSP", "ANCHORED", "NOR_TENDERED", "FREE_PRATIQUE", "PILOT_ON_BOARD", "FIRST_LINE", "ALL_FAST", "COMMENCED_CARGO", "COMPLETED_CARGO", "CAST_OFF", "SAILED")
 
@@ -930,6 +940,51 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
         if session is None:
             return
         actor, actor_role = session
+
+        if path == "/api/master/ports":
+            # Tambah pelabuhan master (ADR-0021): sebelumnya pelabuhan
+            # hanya bisa ditambah langsung di DB (tidak ada endpoint/UI),
+            # padahal kapal + terminal sudah punya keduanya. Validasi
+            # mengikuti pola ADR-0019 (helper _req_text/_opt_text +
+            # _BadRequest -> 400 JSON, bukan IntegrityError).
+            code = _req_text(payload.get("code"), "code").upper()
+            if len(code) != 5 or not code.isalnum() or not code[:2].isalpha():
+                raise _BadRequest("code harus UN/LOCODE 5 karakter (2 huruf negara + 3 karakter lokasi), misal IDBLW")
+            name = _req_text(payload.get("name"), "name")
+            province = _req_text(payload.get("province"), "province")
+            _level_raw = _req_text(payload.get("inaportnet_level"), "inaportnet_level")
+            level = INAPORTNET_LEVELS.get(_level_raw.strip().upper())
+            if level is None:
+                raise _BadRequest("inaportnet_level tidak dikenal — harus salah satu dari: " + ", ".join(INAPORTNET_LEVELS.values()))
+            _unlocode = _opt_text(payload.get("unlocode"), "unlocode")
+            unlocode = _unlocode.upper() if _unlocode else code
+            vts_channel = _opt_text(payload.get("vts_channel"), "vts_channel")
+            notes = _opt_text(payload.get("notes"), "notes")
+            _draft = payload.get("max_draft")
+            if _draft in (None, ""):
+                max_draft = None
+            else:
+                try:
+                    max_draft = float(_draft)
+                except (TypeError, ValueError):
+                    raise _BadRequest("max_draft harus angka")
+                if max_draft < 0:
+                    raise _BadRequest("max_draft tidak boleh negatif")
+            conn = get_db()
+            try:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO master_ports (code, name, province, unlocode, inaportnet_level, vts_channel, max_draft, notes) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (code, name, province, unlocode, level, vts_channel, max_draft, notes),
+                    )
+            except Exception:
+                conn.close()
+                self.send_json({"error": f"Pelabuhan {code} sudah terdaftar"}, status=400)
+                return
+            conn.close()
+            self.send_json({"status": "success", "code": code, "message": f"Pelabuhan {name} ({code}) berhasil ditambahkan"})
+            return
 
         if path == "/api/master/vessels":
             imo = _strip_or_empty(payload.get("imo"))

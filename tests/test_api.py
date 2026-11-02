@@ -1097,6 +1097,48 @@ def test_integration():
             assert board["totals"]["open_disputes"] >= 1
         print("[TEST 33/33] ADR-0017: papan shift merangkum dokumen lewat tenggat, SPB < 6 jam, needs_spb, sengketa OPEN.")
 
+        # -- TES 34 (ADR-0018): cold start Vercel melengkapi skema DB lama.
+        # Regresi insiden 2 Nov 2026: setelah PR #11 di-merge, Vercel 500
+        # "no such table: spb_history" dan detail port call tidak ter-load.
+        # Penyebab: _prepare_database_once() hanya COUNT master_ports +
+        # port_calls — bila keduanya > 0, init_db() tidak pernah jalan,
+        # sehingga tabel baru ADR-0017 tidak pernah dibuat di Turso yang
+        # sudah ada (server lokal lolos karena run_server() selalu init_db).
+        # Tes ini mensimulasikan DB Turso lama: skema penuh + seed, lalu
+        # dua tabel baru di-DROP; jalur cold start Vercel harus membuatnya
+        # lagi tanpa menyentuh data yang sudah ada.
+        from server import _prepare_database_once
+        from engine.db import TABLES
+        old_db_file = os.environ["AGENCY_DB_FILE"]
+        legacy_db = os.path.join(_TEST_TMPDIR, "agency-legacy.db")
+        try:
+            os.environ["AGENCY_DB_FILE"] = legacy_db
+            init_db()
+            seed_sample_data()
+            conn = get_db()
+            with conn:
+                conn.execute("DROP TABLE spb_history")
+                conn.execute("DROP TABLE laytime_calculations")
+            have_before = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'")}
+            assert "spb_history" not in have_before and "laytime_calculations" not in have_before
+            n_pc_before = conn.execute("SELECT COUNT(*) FROM port_calls").fetchone()[0]
+            conn.close()
+            _prepare_database_once()  # jalur cold start Vercel
+            conn = get_db()
+            have_after = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'")}
+            assert set(TABLES).issubset(have_after), f"tabel hilang setelah migrasi: {set(TABLES) - have_after}"
+            n_pc_after = conn.execute("SELECT COUNT(*) FROM port_calls").fetchone()[0]
+            assert n_pc_after == n_pc_before, "migrasi tidak boleh mengubah data lama"
+            conn.close()
+            # Panggil kedua kali: sudah lengkap -> tidak ada yang dijalankan
+            # ulang (tetap murah) dan tetap lulus.
+            _prepare_database_once()
+        finally:
+            os.environ["AGENCY_DB_FILE"] = old_db_file
+        print("[TEST 34/34] ADR-0018: cold start melengkapi tabel baru di DB lama tanpa menyentuh data.")
+
         print("\nSEMUA INTEGRATION TEST LULUS (100% VERIFIED)!")
 
     finally:

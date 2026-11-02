@@ -320,6 +320,12 @@ lokal, tanpa query DB per request).
   seed **harus diganti** dengan data asli perusahaan sebelum dipakai produksi.
 - Akun portal resmi (Inaportnet, INSW, CEISA, Simkapel, SINKARKES) tetap
   dipegang user; sistem ini tidak menyimpan kredensial portal apa pun.
+- **Migrasi skema otomatis (ADR-0018):** cold start memeriksa seluruh
+  16 tabel dan melengkapi yang hilang (`init_db()` idempotent). Bila
+  deploy membawa tabel baru, DB Turso lama diperbaiki sendiri saat
+  instance pertama bangun. Untuk perbaikan darurat tanpa deploy:
+  `scripts/migrasi-adr-0017.sql` (`turso db shell agency-yansen < ...`
+  atau SQL Editor di dashboard).
 - **Laytime SHEX:** hari Minggu dikecualikan dari perhitungan; hari libur
   TIDAK dikecualikan otomatis (tidak ada kalender libur) — catat sebagai
   jeda SOF manual (ADR-0016).

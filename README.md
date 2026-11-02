@@ -340,6 +340,7 @@ lokal, tanpa query DB per request).
   data real masuk.
 - **Status VOID clearance (ADR-0020):** dokumen salah input dibatalkan dengan status VOID — baris tetap tersimpan sebagai riwayat, gate SPB + handover + papan shift mengabaikannya; baris wajib yang di-void tetap memblokir sampai ada baris baru yang APPROVED; VOID final dan hanya OPS/ADMIN; CHECK status dinaikkan lewat rebuild tabel (`scripts/migrasi-adr-0020.sql` + self-heal di cold start/init_db).
 - **Tambah pelabuhan master (ADR-0021):** `POST /api/master/ports` + modal Tambah Pelabuhan di UI — kode UN/LOCODE 5 karakter dinormalisasi, level Inaportnet di-whitelist dan disimpan kanonik, duplikat ditolak 400. Sebelumnya pelabuhan hanya bisa ditambah langsung di database.
+- **Tenggat pasca-ATD (ADR-0022):** badge "Laytime due 2d" / "FDA due 28d" di header detail + kartu papan shift — laytime ATD+3 hari, voucher ATD+7 hari, FDA ATD+30 hari, sengketa 14 hari sejak diajukan; yang selesai tidak lagi menarik perhatian di papan shift.
 
 - **Hash berkas:** kolom `file_sha256`/`file_name` hanya terisi bila ada
   berkas yang benar-benar diunggah (fitur upload belum ada); hash yang dulu

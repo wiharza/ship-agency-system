@@ -227,6 +227,62 @@ def build_clearance_checklist(pc, clearances):
     }
 
 
+def post_atd_deadlines(pc, latest_laytime, disputes):
+    """Tenggat pasca-ATD (SOP Tahap 5, ADR-0022).
+
+    Sebelum ini tidak ada satu pun tenggat pasca-ATD yang dihitung:
+    laytime maks 3 hari, voucher maks 7 hari, FDA kirim maks 30 hari
+    (Q31), sengketa maks 14 hari sejak diajukan. Datanya sudah ada —
+    atd, laytime_calculations, finance_closed_at, dan
+    fda_disputes.deadline_date — hanya belum pernah dirangkai jadi
+    hitung-mundur. Dipakai detail (semua item, termasuk yang selesai)
+    dan papan shift (hanya yang belum selesai).
+    days_left memakai (due - now).days (floor): tenggat hari ini -> 0,
+    lewat 12 jam -> -1 ("Terlambat 1d"). Selesai: laytime bila sudah
+    ada hasil kalkulasi; voucher + FDA bila finance sudah closed
+    (tidak ada penanda "voucher terkumpul" / "FDA terkirim" yang lebih
+    rinci di sistem — dicatat sebagai batasan, bukan ditebak).
+    Rekonsiliasi 14 hari (Tahap 5) TIDAK dibuat badge sendiri: tidak ada
+    status "draf FDA terkirim" yang membedakannya dari FDA 30 hari;
+    hasil rekonsiliasinya adalah matriks selisih Gap 3."""
+    atd_raw = pc.get("atd")
+    if not atd_raw:
+        return []
+    try:
+        atd = parse_iso(atd_raw)
+    except Exception:
+        return []
+    now = datetime.now()
+    finance_closed = bool(pc.get("finance_closed_at"))
+    items = []
+    for key, label, due, done in (
+        ("voucher", "Voucher", atd + timedelta(days=7), finance_closed),
+        ("laytime", "Laytime", atd + timedelta(days=3), latest_laytime is not None),
+        ("fda", "FDA", atd + timedelta(days=30), finance_closed),
+    ):
+        dl = (due - now).days
+        items.append({"key": key, "label": label, "due": _fmt(due),
+                      "days_left": dl, "overdue": (not done and dl < 0), "done": bool(done)})
+    for d in disputes or []:
+        if d.get("status") not in ("OPEN", "UNDER_REVIEW"):
+            continue
+        try:
+            # deadline_date disimpan sebagai tanggal saja (YYYY-MM-DD);
+            # parse_iso tidak mengenal format itu, jadi fallback manual.
+            try:
+                due = parse_iso(d["deadline_date"])
+            except Exception:
+                due = datetime.strptime(d["deadline_date"], "%Y-%m-%d")
+        except Exception:
+            continue
+        dl = (due - now).days
+        label = f"Sengketa {d.get('item_name') or ''}".strip()
+        items.append({"key": "dispute", "label": label, "due": _fmt(due),
+                      "days_left": dl, "overdue": dl < 0, "done": False,
+                      "dispute_id": d.get("id")})
+    return items
+
+
 # Urutan status port call (ADR-0017): status hanya boleh MAJU. Milestone
 # yang dicatat telat (mis. EOSP setelah kapal DEPARTED) tetap tersimpan
 # sebagai fakta lapangan, tapi TIDAK boleh menarik status ke belakang —
@@ -587,22 +643,26 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             clearances_by_pc = {}
             for r in c.fetchall():
                 clearances_by_pc.setdefault(r["port_call_id"], []).append(dict(r))
+            # ADR-0022: laytime sudah dihitung atau belum (untuk tenggat
+            # pasca-ATD) + sengketa yang belum selesai beserta tenggatnya.
+            c.execute("SELECT DISTINCT port_call_id FROM laytime_calculations")
+            has_laytime = {r[0] for r in c.fetchall()}
             c.execute("""
-            SELECT d.port_call_id, d.disputed_amount, dis.item_name
+            SELECT d.id, d.port_call_id, d.disputed_amount, d.deadline_date, d.status, dis.item_name
             FROM fda_disputes d
             JOIN disbursements dis ON d.disbursement_id = dis.id
-            WHERE d.status = 'OPEN'
+            WHERE d.status IN ('OPEN', 'UNDER_REVIEW')
             """)
             disputes_by_pc = {}
             for r in c.fetchall():
-                disputes_by_pc.setdefault(r["port_call_id"], []).append(
-                    {"item_name": r["item_name"], "disputed_amount": r["disputed_amount"]})
+                disputes_by_pc.setdefault(r["port_call_id"], []).append(dict(r))
             conn.close()
 
             now = datetime.now()
             cards = []
             totals = {"overdue_docs": 0, "spb_under_6h": 0, "spb_expired": 0,
-                      "needs_spb": 0, "open_disputes": 0, "active_calls": len(pcs)}
+                      "needs_spb": 0, "open_disputes": 0, "post_atd_overdue": 0,
+                      "active_calls": len(pcs)}
             for pc in pcs:
                 chk = build_clearance_checklist(pc, clearances_by_pc.get(pc["id"], []))
                 overdue = [i["doc_type"] for i in chk["items"] if i["overdue"]]
@@ -621,12 +681,19 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     except Exception:
                         spb_state = "none"
                 needs_spb = pc["status"] == "BERTHED" and not pc.get("spb_issued_at")
-                open_dis = disputes_by_pc.get(pc["id"], [])
+                _all_dis = disputes_by_pc.get(pc["id"], [])
+                open_dis = [d for d in _all_dis if d["status"] == "OPEN"]
+                # ADR-0022: tenggat pasca-ATD — di kartu hanya yang belum
+                # selesai; yang sudah selesai tidak perlu menarik perhatian.
+                _patd = post_atd_deadlines(pc, True if pc["id"] in has_laytime else None, _all_dis)
+                pending_patd = [i for i in _patd if not i["done"]]
+                patd_overdue = sum(1 for i in pending_patd if i["overdue"])
                 totals["overdue_docs"] += len(overdue)
                 totals["spb_under_6h"] += 1 if spb_state == "under_6h" else 0
                 totals["spb_expired"] += 1 if spb_state == "expired" else 0
                 totals["needs_spb"] += 1 if needs_spb else 0
                 totals["open_disputes"] += len(open_dis)
+                totals["post_atd_overdue"] += patd_overdue
                 cards.append({
                     "id": pc["id"], "vessel_name": pc["vessel_name"],
                     "port_name": pc["port_name"], "status": pc["status"],
@@ -635,13 +702,15 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     "overdue_docs": overdue,
                     "spb_state": spb_state, "spb_hours_left": spb_hours_left,
                     "needs_spb": needs_spb, "open_disputes": open_dis,
+                    "post_atd": pending_patd, "post_atd_overdue": patd_overdue,
                 })
             # Paling mendesak dulu: ada peringatan, lalu dokumen lewat
             # tenggat terbanyak, lalu SPB paling dekat kedaluwarsa.
             def _urgency(card):
                 has_alert = bool(card["overdue_docs"] or card["spb_state"] in ("under_6h", "expired")
-                                 or card["needs_spb"] or card["open_disputes"])
-                return (0 if has_alert else 1, -len(card["overdue_docs"]),
+                                 or card["needs_spb"] or card["open_disputes"]
+                                 or card["post_atd_overdue"])
+                return (0 if has_alert else 1, -(len(card["overdue_docs"]) + card["post_atd_overdue"]),
                         card["spb_hours_left"] if card["spb_hours_left"] is not None else 9999)
             cards.sort(key=_urgency)
             self.send_json({"cards": cards, "totals": totals})
@@ -751,6 +820,10 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 c.execute("SELECT * FROM laytime_calculations WHERE port_call_id = ? ORDER BY id DESC LIMIT 1", (pc_id,))
                 _lt = c.fetchone()
                 res["latest_laytime"] = dict(_lt) if _lt else None
+
+                # Tenggat pasca-ATD (ADR-0022): laytime 3d, voucher 7d,
+                # FDA 30d, sengketa 14d — dihitung dari ATD di atas.
+                res["post_atd"] = post_atd_deadlines(res, res["latest_laytime"], res["disputes"])
 
                 conn.close()
                 self.send_json(res)

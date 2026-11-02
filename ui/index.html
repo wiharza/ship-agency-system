@@ -211,6 +211,7 @@
             </div>
           </div>
           <div style="margin-top: 8px;">
+            <div id="ov-post-atd" style="display: none; gap: 4px; flex-wrap: wrap; margin-bottom: 8px;"></div>
             <button class="btn btn-outline" id="btn-edit-pc" style="padding: 4px 10px; font-size: 12px;" onclick="openEditPortCallModal()">✏️ Ubah ETA / ETD / Muatan</button>
             <small style="color: var(--text-muted); font-size: 11px; margin-left: 8px;">Tenggat RKSP (ETA−24 jam) dan permohonan SPB (ETD−4 jam) dihitung ulang dari nilai baru.</small>
           </div>
@@ -498,6 +499,7 @@
         if (t.spb_under_6h) parts.push(`<span style="color:#fbbf24;">${t.spb_under_6h} SPB sisa &lt; 6 jam</span>`);
         if (t.needs_spb) parts.push(`<span style="color:#fbbf24;">${t.needs_spb} sandar, SPB belum diterbitkan</span>`);
         if (t.open_disputes) parts.push(`<span style="color:#f87171;">${t.open_disputes} sengketa OPEN</span>`);
+        if (t.post_atd_overdue) parts.push(`<span style="color:#f87171;">${t.post_atd_overdue} tenggat pasca-ATD lewat</span>`);
         boardEl.innerHTML = `<strong style="color:var(--cyan);">Papan Shift — ${t.active_calls || 0} port call aktif:</strong> ` +
           (parts.length ? parts.join(' • ') : '<span style="color:#34d399;">tidak ada yang mendesak</span>');
       } else {
@@ -520,6 +522,7 @@
           else if (a.spb_state === 'under_6h') bits.push(`<span class="badge badge-yellow">SPB ${a.spb_hours_left} jam lagi</span>`);
           if (a.needs_spb) bits.push(`<span class="badge badge-yellow">SPB belum diterbitkan</span>`);
           if (a.open_disputes && a.open_disputes.length) bits.push(`<span class="badge badge-red">${a.open_disputes.length} sengketa OPEN</span>`);
+          if (a.post_atd && a.post_atd.length) bits.push(...a.post_atd.map(postAtdBadge));
           if (bits.length) alerts = `<div style="margin-top: 6px; display: flex; gap: 4px; flex-wrap: wrap;">${bits.join('')}</div>`;
         }
         item.innerHTML = `
@@ -537,6 +540,15 @@
       if (!activePortCallId && data.port_calls.length > 0) {
         selectPortCall(data.port_calls[0].id);
       }
+    }
+
+    // Badge tenggat pasca-ATD (ADR-0022): dipakai kartu shift-board dan
+    // header detail. "due 2d" = sisa 2 hari; "Terlambat 1d" = lewat 1 hari.
+    function postAtdBadge(it) {
+      if (it.done) return `<span class="badge badge-green">${esc(it.label)} Selesai</span>`;
+      if (it.overdue) return `<span class="badge badge-red">${esc(it.label)} Terlambat ${-it.days_left}d</span>`;
+      const cls = it.days_left <= 2 ? 'badge-yellow' : 'badge-cyan';
+      return `<span class="badge ${cls}">${esc(it.label)} due ${it.days_left}d</span>`;
     }
 
     async function selectPortCall(id) {
@@ -569,6 +581,18 @@
       document.getElementById('ov-eta').innerText = currentData.eta;
       document.getElementById('ov-etd').innerText = currentData.etd || '-';
       document.getElementById('ov-status').innerText = currentData.status;
+
+      // Tenggat pasca-ATD (ADR-0022): laytime 3d, voucher 7d, FDA 30d,
+      // sengketa 14d — tampil di header detail bila ATD sudah ada.
+      const patdEl = document.getElementById('ov-post-atd');
+      const patd = currentData.post_atd || [];
+      if (patd.length) {
+        patdEl.style.display = 'flex';
+        patdEl.innerHTML = `<span style="font-size: 12px; color: var(--text-muted); align-self: center;">Tenggat pasca-ATD:</span>` + patd.map(postAtdBadge).join('');
+      } else {
+        patdEl.style.display = 'none';
+        patdEl.innerHTML = '';
+      }
 
       // Badges
       const badgesEl = document.getElementById('view-badges');

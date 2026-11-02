@@ -1097,24 +1097,65 @@ def test_integration():
             assert board["totals"]["open_disputes"] >= 1
         print("[TEST 33/33] ADR-0017: papan shift merangkum dokumen lewat tenggat, SPB < 6 jam, needs_spb, sengketa OPEN.")
 
-        # 34. Test Validasi Input (ADR-0019): whitelist + normalisasi
+        # -- TES 34 (ADR-0018): cold start Vercel melengkapi skema DB lama.
+        # Regresi insiden 2 Nov 2026: setelah PR #11 di-merge, Vercel 500
+        # "no such table: spb_history" dan detail port call tidak ter-load.
+        # Penyebab: _prepare_database_once() hanya COUNT master_ports +
+        # port_calls — bila keduanya > 0, init_db() tidak pernah jalan,
+        # sehingga tabel baru ADR-0017 tidak pernah dibuat di Turso yang
+        # sudah ada (server lokal lolos karena run_server() selalu init_db).
+        # Tes ini mensimulasikan DB Turso lama: skema penuh + seed, lalu
+        # dua tabel baru di-DROP; jalur cold start Vercel harus membuatnya
+        # lagi tanpa menyentuh data yang sudah ada.
+        from server import _prepare_database_once
+        from engine.db import TABLES
+        old_db_file = os.environ["AGENCY_DB_FILE"]
+        legacy_db = os.path.join(_TEST_TMPDIR, "agency-legacy.db")
+        try:
+            os.environ["AGENCY_DB_FILE"] = legacy_db
+            init_db()
+            seed_sample_data()
+            conn = get_db()
+            with conn:
+                conn.execute("DROP TABLE spb_history")
+                conn.execute("DROP TABLE laytime_calculations")
+            have_before = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'")}
+            assert "spb_history" not in have_before and "laytime_calculations" not in have_before
+            n_pc_before = conn.execute("SELECT COUNT(*) FROM port_calls").fetchone()[0]
+            conn.close()
+            _prepare_database_once()  # jalur cold start Vercel
+            conn = get_db()
+            have_after = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'")}
+            assert set(TABLES).issubset(have_after), f"tabel hilang setelah migrasi: {set(TABLES) - have_after}"
+            n_pc_after = conn.execute("SELECT COUNT(*) FROM port_calls").fetchone()[0]
+            assert n_pc_after == n_pc_before, "migrasi tidak boleh mengubah data lama"
+            conn.close()
+            # Panggil kedua kali: sudah lengkap -> tidak ada yang dijalankan
+            # ulang (tetap murah) dan tetap lulus.
+            _prepare_database_once()
+        finally:
+            os.environ["AGENCY_DB_FILE"] = old_db_file
+        print("[TEST 34/36] ADR-0018: cold start melengkapi tabel baru di DB lama tanpa menyentuh data.")
+        # 35. Test Validasi Input (ADR-0019): whitelist + normalisasi
         #     clearance, milestone_code wajib, laytime wajib 3 waktu,
         #     JSON rusak -> 400 (bukan koneksi putus / data demo tersimpan).
         #     Dulu semua ini melempar IntegrityError/AttributeError di
         #     tengah transaksi dan menutup koneksi tanpa respons JSON.
         with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc_id}") as res:
-            detail34 = json.loads(res.read().decode("utf-8"))
-            cl34 = detail34["clearances"][0]["id"]
+            detail35 = json.loads(res.read().decode("utf-8"))
+            cl35 = detail35["clearances"][0]["id"]
         # status huruf kecil dinormalisasi -> 200 + tersimpan "APPROVED".
-        with urllib.request.urlopen(_post(f"/api/clearances/{cl34}/update",
+        with urllib.request.urlopen(_post(f"/api/clearances/{cl35}/update",
                 {"status": "approved"})) as res:
             assert res.status == 200
         with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc_id}") as res:
-            detail34 = json.loads(res.read().decode("utf-8"))
-            cl34_row = next(c for c in detail34["clearances"] if c["id"] == cl34)
-            assert cl34_row["status"] == "APPROVED", f"status 'approved' harus ternormalisasi jadi APPROVED, dapat {cl34_row['status']}"
-        _expect_400(f"/api/clearances/{cl34}/update", {"status": "BOGUS"}, "status tidak dikenal")
-        _expect_400(f"/api/clearances/{cl34}/update", {"doc_number": 12345}, "doc_number harus berupa teks")
+            detail35 = json.loads(res.read().decode("utf-8"))
+            cl35_row = next(c for c in detail35["clearances"] if c["id"] == cl35)
+            assert cl35_row["status"] == "APPROVED", f"status 'approved' harus ternormalisasi jadi APPROVED, dapat {cl35_row['status']}"
+        _expect_400(f"/api/clearances/{cl35}/update", {"status": "BOGUS"}, "status tidak dikenal")
+        _expect_400(f"/api/clearances/{cl35}/update", {"doc_number": 12345}, "doc_number harus berupa teks")
         # agency di luar whitelist -> 400; huruf kecil dinormalisasi -> 200.
         _expect_400(f"/api/port-calls/{pc_id}/clearance",
                     {"agency": "POLISI", "doc_type": "Surat X", "status": "APPROVED"}, "agency tidak dikenal")
@@ -1122,9 +1163,9 @@ def test_integration():
                 {"agency": "bea_cukai", "doc_type": "Dokumen Tes Validasi", "status": "pending"})) as res:
             assert res.status == 200
         with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc_id}") as res:
-            detail34 = json.loads(res.read().decode("utf-8"))
-            baru34 = next(c for c in detail34["clearances"] if c["doc_type"] == "Dokumen Tes Validasi")
-            assert baru34["agency"] == "BEA_CUKAI" and baru34["status"] == "PENDING", f"agency/status harus ternormalisasi, dapat {baru34}"
+            detail35 = json.loads(res.read().decode("utf-8"))
+            baru35 = next(c for c in detail35["clearances"] if c["doc_type"] == "Dokumen Tes Validasi")
+            assert baru35["agency"] == "BEA_CUKAI" and baru35["status"] == "PENDING", f"agency/status harus ternormalisasi, dapat {baru35}"
         # milestone: tanpa code -> 400; code tak dikenal -> 400; huruf
         # kecil -> 200 (dinormalisasi jadi EOSP).
         _expect_400(f"/api/port-calls/{pc_id}/milestone",
@@ -1164,9 +1205,9 @@ def test_integration():
         _expect_raw_400("/api/login", b"[1, 2, 3]", "Body JSON harus berupa objek")
         with urllib.request.urlopen(f"{base_url}/api/port-calls") as res:
             assert res.status == 200, "Server harus tetap hidup setelah body rusak"
-        print("[TEST 34/35] ADR-0019: validasi whitelist/normalisasi clearance+milestone, laytime wajib 3 waktu, JSON rusak 400.")
+        print("[TEST 35/36] ADR-0019: validasi whitelist/normalisasi clearance+milestone, laytime wajib 3 waktu, JSON rusak 400.")
 
-        # 35. Test Security Headers + /api/health (ADR-0019).
+        # 36. Test Security Headers + /api/health (ADR-0019).
         anon_opener = urllib.request.build_opener()  # tanpa cookie
         with anon_opener.open(f"{base_url}/api/health") as res:
             assert res.status == 200
@@ -1181,7 +1222,7 @@ def test_integration():
             assert res.headers.get("X-Frame-Options") == "DENY"
         with anon_opener.open(f"{base_url}/") as res:
             assert res.headers.get("X-Content-Type-Options") == "nosniff", "Halaman login juga harus membawa security headers"
-        print("[TEST 35/35] ADR-0019: /api/health tanpa auth + security headers di API, UI, dan halaman login.")
+        print("[TEST 36/36] ADR-0019: /api/health tanpa auth + security headers di API, UI, dan halaman login.")
 
         print("\nSEMUA INTEGRATION TEST LULUS (100% VERIFIED)!")
 

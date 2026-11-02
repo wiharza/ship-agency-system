@@ -128,7 +128,7 @@ inline (pekerjaan terpisah, bukan satu baris header).
 
 ## Verifikasi
 
-- Tes API 35/35 (Tes 34–35 baru: validasi whitelist/normalisasi
+- Tes API 36/36 (Tes 35–36 baru: validasi whitelist/normalisasi
   clearance + milestone, laytime wajib 3 waktu, JSON rusak 400,
   server tetap hidup sesudahnya; `/api/health` tanpa auth + security
   headers di API, UI, halaman login), laytime lulus, libsql backend

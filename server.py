@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from email.message import Message as WSGIHeaders
 
-from engine.db import get_db, init_db, seed_sample_data, log_audit, drop_remote_connection
+from engine.db import get_db, init_db, seed_sample_data, log_audit, drop_remote_connection, TABLES
 from engine.auth import (
     SESSION_COOKIE_NAME, SESSION_TTL_SECONDS,
     get_session_secret, make_session_cookie, verify_session_cookie,
@@ -2235,7 +2235,19 @@ def _prepare_database_once():
     gagal dengan "no such table" -> init_db() + seed penuh.
     (Satu statement, bukan dua: COUNT gabungan ini adalah ide dari
     turso-speedup.patch — bedanya, patch itu hanya mengecek master_ports,
-    sehingga DB yang tabelnya tidak lengkap lolos tanpa diperbaiki.)"""
+    sehingga DB yang tabelnya tidak lengkap lolos tanpa diperbaiki.)
+
+    ADR-0018: COUNT di atas hanya membuktikan DUA tabel ada dan terisi.
+    Tabel yang ditambahkan belakangan (spb_history dan
+    laytime_calculations di ADR-0017) tidak pernah dibuat di DB Turso yang
+    sudah ada — padahal endpoint detail/handover meng-query keduanya tanpa
+    syarat. Akibatnya setelah PR #11 di-merge, Vercel 500 "no such table"
+    dan detail port call tidak ter-load, sementara server lokal jalan
+    normal karena run_server() selalu memanggil init_db(). Maka satu query
+    tambahan ke sqlite_master memastikan KE-16 tabel (TABLES) ada; bila
+    ada yang hilang, init_db() — idempotent, CREATE TABLE IF NOT EXISTS —
+    melengkapinya. Biaya bila skema lengkap: 1 round-trip; bila ada yang
+    hilang: init_db() sekali, lalu cold start berikutnya kembali murah."""
     conn = get_db()
     try:
         try:
@@ -2252,6 +2264,13 @@ def _prepare_database_once():
             return
         if row[0] == 0 or row[1] == 0:
             seed_sample_data()
+        # ADR-0018: pastikan SELURUH skema ada, bukan hanya 2 tabel.
+        # fetchall() — bukan iterasi cursor langsung — karena cursor
+        # libsql (_LibSQLCursor) tidak iterable seperti cursor sqlite3.
+        have = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
+        if not set(TABLES).issubset(have):
+            init_db()
     finally:
         conn.close()
 

@@ -30,11 +30,23 @@ SESSION_TTL_SECONDS = 12 * 3600  # 12 jam
 PBKDF2_ITERATIONS = 260_000
 ROLES = ("OPS", "FINANCE", "ADMIN")
 
-LOGIN_MAX_ATTEMPTS = 5          # percobaan gagal per username ...
+LOGIN_MAX_ATTEMPTS = 5          # percobaan gagal per username+IP ...
 LOGIN_WINDOW_SECONDS = 15 * 60  # ... dalam 15 menit -> 429
 
-_login_attempts = {}  # username -> [timestamp, ...]
+# Kunci rate limit = (username, IP klien). Dulu hanya username, sehingga
+# siapa pun bisa mengunci akun orang lain (mis. ops_jakarta) dengan 5x
+# login gagal — tanpa perlu tahu passwordnya (ADR-0016). Dengan kunci
+# per IP, percobaan dari IP lain tidak mengunci pengguna yang sah.
+# Sisa yang disadari: IP diambil dari X-Forwarded-For hop pertama bila
+# ada (di belakang Vercel), jadi penyerang yang memalsukan header itu
+# bisa mengganti IP-nya dan lolos dari batas — limit ini tetap best-effort
+# per ADR-0011, bukan pengganti WAF.
+_login_attempts = {}  # (username, client_ip) -> [timestamp, ...]
 _login_lock = threading.Lock()
+
+
+def _rate_key(username, client_ip):
+    return (username, client_ip or "unknown")
 
 
 # ---------------------------------------------------------------------------
@@ -137,20 +149,21 @@ def verify_session_cookie(cookie_header):
 # Rate limit login (in-memory, per username)
 # ---------------------------------------------------------------------------
 
-def is_login_blocked(username):
-    """True bila username ini sudah 5x gagal login dalam 15 menit terakhir."""
+def is_login_blocked(username, client_ip=None):
+    """True bila username ini dari IP ini sudah 5x gagal login dalam 15 menit terakhir."""
     now = time.time()
+    key = _rate_key(username, client_ip)
     with _login_lock:
-        attempts = [t for t in _login_attempts.get(username, []) if now - t < LOGIN_WINDOW_SECONDS]
-        _login_attempts[username] = attempts
+        attempts = [t for t in _login_attempts.get(key, []) if now - t < LOGIN_WINDOW_SECONDS]
+        _login_attempts[key] = attempts
         return len(attempts) >= LOGIN_MAX_ATTEMPTS
 
 
-def record_login_failure(username):
+def record_login_failure(username, client_ip=None):
     with _login_lock:
-        _login_attempts.setdefault(username, []).append(time.time())
+        _login_attempts.setdefault(_rate_key(username, client_ip), []).append(time.time())
 
 
-def clear_login_failures(username):
+def clear_login_failures(username, client_ip=None):
     with _login_lock:
-        _login_attempts.pop(username, None)
+        _login_attempts.pop(_rate_key(username, client_ip), None)

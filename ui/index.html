@@ -401,6 +401,18 @@
     let currentData = null;
     let timerInterval = null;
 
+    // Escape teks sebelum dimasukkan ke innerHTML (ADR-0016): data dari
+    // server (nama kapal, nomor dokumen, remarks, ...) adalah input
+    // pengguna dan bisa berisi markup — tanpa escape, skrip tertanam akan
+    // jalan sebagai user yang sedang login (stored XSS) dan bisa memanggil
+    // API (terbitkan SPB, tutup finance). Cookie HttpOnly tidak bisa
+    // dicuri, tapi itu tidak menghentikan pemanggilan API dari halaman.
+    function esc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
     async function loadPortCalls() {
       const res = await fetch('/api/port-calls');
       if (res.status === 401) { location.reload(); return; }  // session habis -> halaman login
@@ -413,11 +425,11 @@
         item.className = 'pc-item' + (pc.id === activePortCallId ? ' active' : '');
         item.onclick = () => selectPortCall(pc.id);
         item.innerHTML = `
-          <div class="pc-vessel">${pc.vessel_name}</div>
-          <div class="pc-meta">${pc.id} | ${pc.port_name}</div>
+          <div class="pc-vessel">${esc(pc.vessel_name)}</div>
+          <div class="pc-meta">${esc(pc.id)} | ${esc(pc.port_name)}</div>
           <div style="margin-top: 6px; display: flex; gap: 4px;">
-            <span class="badge ${pc.vessel_category === 'FOREIGN' ? 'badge-yellow' : 'badge-cyan'}">${pc.vessel_category}</span>
-            <span class="badge badge-green">${pc.status}</span>
+            <span class="badge ${pc.vessel_category === 'FOREIGN' ? 'badge-yellow' : 'badge-cyan'}">${esc(pc.vessel_category)}</span>
+            <span class="badge badge-green">${esc(pc.status)}</span>
           </div>
         `;
         listEl.appendChild(item);
@@ -461,8 +473,8 @@
       // Badges
       const badgesEl = document.getElementById('view-badges');
       badgesEl.innerHTML = `
-        <span class="badge ${currentData.vessel_category === 'FOREIGN' ? 'badge-yellow' : 'badge-cyan'}">${currentData.vessel_category}</span>
-        <span class="badge badge-green">${currentData.status}</span>
+        <span class="badge ${currentData.vessel_category === 'FOREIGN' ? 'badge-yellow' : 'badge-cyan'}">${esc(currentData.vessel_category)}</span>
+        <span class="badge badge-green">${esc(currentData.status)}</span>
       `;
 
       // Dual Sign-Off Status
@@ -501,11 +513,11 @@
         const tr = document.createElement('tr');
         const badgeClass = cl.status === 'APPROVED' ? 'badge-green' : (cl.status === 'REJECTED' ? 'badge-red' : 'badge-yellow');
         tr.innerHTML = `
-          <td><strong style="color:var(--cyan);">${cl.agency}</strong></td>
-          <td>${cl.doc_type}</td>
-          <td>${cl.doc_number || '<span style="color:var(--yellow)">Belum Terbit</span>'}</td>
-          <td><span class="badge ${badgeClass}">${cl.status}</span></td>
-          <td class="mono" title="${cl.file_sha256 || ''}">${cl.file_sha256 ? cl.file_sha256.substring(0, 16) + '...' : '-'}</td>
+          <td><strong style="color:var(--cyan);">${esc(cl.agency)}</strong></td>
+          <td>${esc(cl.doc_type)}</td>
+          <td>${cl.doc_number ? esc(cl.doc_number) : '<span style="color:var(--yellow)">Belum Terbit</span>'}</td>
+          <td><span class="badge ${badgeClass}">${esc(cl.status)}</span></td>
+          <td class="mono" title="${esc(cl.file_sha256 || '')}">${cl.file_sha256 ? esc(cl.file_sha256.substring(0, 16)) + '...' : '-'}</td>
           <td style="text-align: center;"><button class="btn btn-outline" style="padding: 2px 8px; font-size: 11px;" onclick="openEditClearanceModal(${cl.id})">Edit</button></td>
         `;
         clTable.appendChild(tr);
@@ -517,11 +529,11 @@
       (currentData.stoppages || []).forEach(s => {
         const tr = document.createElement('tr');
         tr.innerHTML = `
-          <td>${s.start_time}</td>
-          <td>${s.end_time}</td>
-          <td><span class="badge badge-yellow">${s.category}</span></td>
-          <td>${s.percentage_counted}%</td>
-          <td>${s.remarks || '-'}</td>
+          <td>${esc(s.start_time)}</td>
+          <td>${esc(s.end_time)}</td>
+          <td><span class="badge badge-yellow">${esc(s.category)}</span></td>
+          <td>${esc(s.percentage_counted)}%</td>
+          <td>${esc(s.remarks) || '-'}</td>
         `;
         stpTable.appendChild(tr);
       });
@@ -532,11 +544,11 @@
       (currentData.disbursements || []).forEach(d => {
         const tr = document.createElement('tr');
         tr.innerHTML = `
-          <td><span class="badge badge-cyan">${d.category}</span></td>
-          <td>${d.item_name}</td>
+          <td><span class="badge badge-cyan">${esc(d.category)}</span></td>
+          <td>${esc(d.item_name)}</td>
           <td>Rp ${Number(d.pda_estimate).toLocaleString('id-ID')}</td>
           <td>Rp ${Number(d.fda_actual).toLocaleString('id-ID')}</td>
-          <td>${d.ntpn ? 'NTPN: ' + d.ntpn : (d.simponi_billing ? 'Bill: ' + d.simponi_billing : '-')}</td>
+          <td>${d.ntpn ? 'NTPN: ' + esc(d.ntpn) : (d.simponi_billing ? 'Bill: ' + esc(d.simponi_billing) : '-')}</td>
           <td><button class="btn btn-outline" style="padding:2px 8px; font-size:11px;" onclick="openDisputeModal(${d.id})">Ajukan Sengketa</button></td>
         `;
         finTable.appendChild(tr);
@@ -548,11 +560,11 @@
       (currentData.disputes || []).forEach(dp => {
         const tr = document.createElement('tr');
         tr.innerHTML = `
-          <td>${dp.item_name}</td>
+          <td>${esc(dp.item_name)}</td>
           <td>Rp ${Number(dp.disputed_amount).toLocaleString('id-ID')}</td>
-          <td>${dp.principal_reason}</td>
-          <td>${dp.deadline_date}</td>
-          <td><span class="badge badge-red">${dp.status}</span></td>
+          <td>${esc(dp.principal_reason)}</td>
+          <td>${esc(dp.deadline_date)}</td>
+          <td><span class="badge badge-red">${esc(dp.status)}</span></td>
         `;
         dTable.appendChild(tr);
       });
@@ -692,21 +704,21 @@
           const badge = (st) => st === 'APPROVED' ? 'badge-green' : (st === 'BELUM ADA' ? 'badge-red' : 'badge-yellow');
           const row = (it) => `<tr>
             <td>${it.phase === 'CLEARANCE_IN' ? 'Clearance In' : 'Clearance Out'}</td>
-            <td>${it.doc_type}</td>
-            <td>${it.agency}</td>
-            <td>${it.deadline || '—'}</td>
-            <td><span class="badge ${badge(it.status)}">${it.status}</span></td>
-            <td style="font-size:11px;color:${it.overdue ? '#f87171' : (it.due_soon ? '#fbbf24' : 'var(--text-muted)')};">${it.warning || it.basis}</td>
+            <td>${esc(it.doc_type)}</td>
+            <td>${esc(it.agency)}</td>
+            <td>${esc(it.deadline) || '—'}</td>
+            <td><span class="badge ${badge(it.status)}">${esc(it.status)}</span></td>
+            <td style="font-size:11px;color:${it.overdue ? '#f87171' : (it.due_soon ? '#fbbf24' : 'var(--text-muted)')};">${esc(it.warning || it.basis)}</td>
           </tr>`;
           el.innerHTML = `
             <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
               <strong style="font-size:13px;">Checklist Clearance — Tenggat dari ETA/ETD</strong>
               <span class="badge ${d.can_issue_spb ? 'badge-green' : 'badge-red'}">${d.can_issue_spb ? '✓ SPB BISA DITERBITKAN' : '✕ SPB BELUM BISA DITERBITKAN'}</span>
             </div>
-            ${d.blockers && d.blockers.length ? `<div style="color:#f87171;font-size:12px;margin-bottom:8px;">Penghalang SPB:<br>• ${d.blockers.join('<br>• ')}</div>` : ''}
+            ${d.blockers && d.blockers.length ? `<div style="color:#f87171;font-size:12px;margin-bottom:8px;">Penghalang SPB:<br>• ${d.blockers.map(esc).join('<br>• ')}</div>` : ''}
             <table><thead><tr><th>Fase</th><th>Dokumen</th><th>Instansi</th><th>Tenggat</th><th>Status</th><th>Dasar / Peringatan</th></tr></thead>
             <tbody>${d.items.map(row).join('')}</tbody></table>
-            <p style="font-size:11px;color:var(--text-muted);margin-top:6px;">${d.note}</p>`;
+            <p style="font-size:11px;color:var(--text-muted);margin-top:6px;">${esc(d.note)}</p>`;
         })
         .catch(() => { el.innerHTML = 'Checklist tidak dapat dimuat.'; });
     }
@@ -827,13 +839,13 @@
       const vesselSelect = document.getElementById('modal-vessel-select');
       
       // Populate Ports
-      portSelect.innerHTML = (cachedMasterData.ports || []).map(p => 
-        `<option value="${p.code}">${p.code} - ${p.name} (${p.province}) [${p.inaportnet_level}]</option>`
+      portSelect.innerHTML = (cachedMasterData.ports || []).map(p =>
+        `<option value="${esc(p.code)}">${esc(p.code)} - ${esc(p.name)} (${esc(p.province)}) [${esc(p.inaportnet_level)}]</option>`
       ).join('');
 
       // Populate Vessels
-      vesselSelect.innerHTML = (cachedMasterData.vessels || []).map(v => 
-        `<option value="${v.imo}" data-flag="${v.flag}">${v.name} (IMO: ${v.imo}) - [${v.flag === 'ID' ? 'DOMESTIK' : 'ASING'}]</option>`
+      vesselSelect.innerHTML = (cachedMasterData.vessels || []).map(v =>
+        `<option value="${esc(v.imo)}" data-flag="${esc(v.flag)}">${esc(v.name)} (IMO: ${esc(v.imo)}) - [${v.flag === 'ID' ? 'DOMESTIK' : 'ASING'}]</option>`
       ).join('');
 
       // Default ETA: Besok jam 08:00
@@ -856,7 +868,7 @@
       const port = (cachedMasterData?.ports || []).find(p => p.code === portCode);
 
       if (port && port.terminals && port.terminals.length > 0) {
-        let opts = port.terminals.map(t => `<option value="${t.name}">${t.name} (${t.terminal_type} - Max Draft: ${t.max_draft || '-'}m)</option>`).join('');
+        let opts = port.terminals.map(t => `<option value="${esc(t.name)}">${esc(t.name)} (${esc(t.terminal_type)} - Max Draft: ${esc(t.max_draft) || '-'}m)</option>`).join('');
         opts += `<option value="__NEW__">➕ [+ Input Terminal / Dermaga Baru...]</option>`;
         termSelect.innerHTML = opts;
       } else {

@@ -24,6 +24,10 @@ from engine.auth import (
 from engine.laytime import LaytimeCalculator, parse_iso
 
 PORT = 8000
+# Batas ukuran body JSON per request (ADR-0016): semua payload sah di
+# aplikasi ini hanya JSON kecil (form + daftar); tanpa batas, satu POST
+# raksasa bisa menghabiskan memori proses.
+MAX_BODY_BYTES = 1_000_000  # 1 MB
 
 # ---------------------------------------------------------------------------
 # Clearance gate SPB & checklist tenggat (PM 28/2022, PM 8/2022, PMK 158/2017
@@ -341,19 +345,17 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(response_bytes)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
         for key, value in (extra_headers or {}).items():
             self.send_header(key, value)
         self.end_headers()
         self.wfile.write(response_bytes)
 
     def do_OPTIONS(self):
+        # Tanpa header CORS: UI dilayani dari origin yang sama, jadi tidak
+        # ada permintaan lintas origin yang sah. Access-Control-Allow-Origin
+        # "*" sebelumnya tidak berguna untuk cookie (browser menolak
+        # credential dengan "*") dan hanya menambah permukaan.
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
     def do_GET(self):
@@ -557,7 +559,14 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-        length = int(self.headers.get("Content-Length", 0))
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            self.send_json({"error": "Content-Length tidak valid"}, status=400)
+            return
+        if length > MAX_BODY_BYTES:
+            self.send_json({"error": f"Body terlalu besar (maks {MAX_BODY_BYTES // 1024} KB)"}, status=413)
+            return
         body = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
         try:
             payload = json.loads(body)
@@ -571,7 +580,13 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             if not username or not password:
                 self.send_json({"error": "Username dan password wajib diisi"}, status=400)
                 return
-            if is_login_blocked(username):
+            # IP klien untuk rate limit (ADR-0016): hop pertama
+            # X-Forwarded-For bila di belakang proxy (Vercel), kalau tidak
+            # alamat koneksi langsung. Kunci per (username, IP) supaya satu
+            # penyerang tidak bisa mengunci akun orang lain.
+            xff = self.headers.get("X-Forwarded-For", "")
+            client_ip = xff.split(",")[0].strip() if xff else self.client_address[0]
+            if is_login_blocked(username, client_ip):
                 self.send_json(
                     {"error": "Terlalu banyak percobaan login — coba lagi 15 menit lagi"},
                     status=429)
@@ -585,10 +600,10 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             # nonaktif / password salah) supaya tidak membocorkan user mana
             # yang terdaftar.
             if row is None or not row["active"] or not verify_password(password, row["password_hash"]):
-                record_login_failure(username)
+                record_login_failure(username, client_ip)
                 self.send_json({"error": "Username atau password salah"}, status=401)
                 return
-            clear_login_failures(username)
+            clear_login_failures(username, client_ip)
             try:
                 cookie_value = make_session_cookie(row["username"], row["role"])
             except RuntimeError as exc:

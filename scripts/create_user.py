@@ -50,6 +50,14 @@ def main():
                     help="Bila user sudah ada, reset password/nama/role-nya")
     args = ap.parse_args()
 
+    # Validasi username di sini juga (bukan hanya di create_user), karena
+    # jalur --update di bawah tidak memanggil create_user — dan '|' merusak
+    # payload cookie session (ADR-0016).
+    args.username = (args.username or "").strip()
+    if not args.username or "|" in args.username:
+        print("Username tidak boleh kosong atau mengandung karakter '|'.")
+        return 1
+
     password = args.password or _read_password_twice()
     init_db()
     conn = get_db()

@@ -1,4 +1,6 @@
 __pycache__/
 *.pyc
 agency.db
+agency.db-wal
+agency.db-shm
 .env

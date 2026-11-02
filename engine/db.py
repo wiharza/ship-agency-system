@@ -281,6 +281,7 @@ def get_db():
         raw = _libsql.connect(url)
         conn = _LibSQLConnection(raw)
         conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 5000")
         return conn
     if url and _libsql is None:
         raise RuntimeError(
@@ -289,6 +290,13 @@ def get_db():
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # ADR-0016: server lokal kini multi-thread (ADR-0013) — dua thread yang
+    # menulis bersamaan sebelumnya bisa "database is locked". busy_timeout
+    # 5 detik memberi SQLite waktu menunggu giliran tulis; WAL membiarkan
+    # baca jalan bersamaan dengan tulis. (File -wal/-shm ikut diabaikan
+    # .gitignore.)
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA journal_mode = WAL")
     return conn
 
 
@@ -703,6 +711,12 @@ def create_user(conn, username, password, full_name, role):
     username = (username or "").strip()
     if not username:
         raise ValueError("Username wajib diisi")
+    if "|" in username:
+        # ADR-0016: '|' adalah pemisah payload cookie session
+        # ("username|role|expiry") — username yang mengandungnya membuat
+        # verify_session_cookie() selalu gagal, jadi user itu tidak akan
+        # pernah bisa login.
+        raise ValueError("Username tidak boleh mengandung karakter '|'")
     exists = conn.execute(
         "SELECT 1 FROM users WHERE username = ?", (username,)).fetchone()
     if exists:

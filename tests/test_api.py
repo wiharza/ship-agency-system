@@ -835,9 +835,11 @@ def test_integration():
         # Tutup pc2 sampai CLOSED. Sengketa dibuat dulu lalu dibawa ke
         # UNDER_REVIEW sebelum close-finance, supaya pengecualian
         # resolusi sengketa setelah CLOSED bisa diuji (sengketa OPEN
-        # akan menghalangi close-finance — lihat Tes 31).
+        # akan menghalangi close-finance — lihat Tes 31). FDA baris ini
+        # diisi penuh sejak awal supaya close-finance tidak terhalang
+        # blocker FDA 0 (Tes 31 menguji blocker itu).
         with urllib.request.urlopen(_post(f"/api/port-calls/{pc2}/disbursements",
-                {"category": "HUSBANDRY", "item_name": "Air Tawar", "pda_estimate": 1000000, "fda_actual": 0})) as res:
+                {"category": "HUSBANDRY", "item_name": "Air Tawar", "pda_estimate": 1000000, "fda_actual": 1000000})) as res:
             assert res.status == 200
             dis28 = json.loads(res.read().decode("utf-8"))["disbursement_id"]
         with urllib.request.urlopen(_post(f"/api/port-calls/{pc2}/dispute",
@@ -913,6 +915,187 @@ def test_integration():
         _expect_400(f"/api/milestones/{ms29['id']}", {"event_time": "2026-11-12 07:00"}, "lebih awal dari milestone sebelumnya")
         _expect_400(f"/api/milestones/{ms29['id']}", {"event_time": "12-11-2026 09:00"}, "tidak valid")
         print("[TEST 29/29] ADR-0017: koreksi waktu milestone tanpa mengubah status, urutan SOF dijaga.")
+
+        # 30. Koreksi ETA/ETD/muatan (ADR-0017): tenggat RKSP (ETA-24
+        # jam) dan permohonan SPB (ETD-4 jam) ikut hitung ulang; audit
+        # mencatat nilai lama dan baru.
+        _expect_status(fin_opener, f"/api/port-calls/{pc3}/update",
+                       {"eta": "2026-11-13 08:00"}, 403, "OPS atau ADMIN")
+        _expect_400(f"/api/port-calls/{pc3}/update",
+                    {"eta": "2026-11-13 08:00", "etd": "2026-11-12 08:00"}, "lebih awal dari ETA")
+        _expect_400(f"/api/port-calls/{pc3}/update",
+                    {"cargo_tonnage": "rusak"}, "harus angka")
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc3}/update",
+                {"eta": "2026-11-13 08:00", "etd": "2026-11-16 18:00",
+                 "cargo_name": "Batu Bara", "cargo_tonnage": 60000})) as res:
+            assert res.status == 200
+            upd30 = json.loads(res.read().decode("utf-8"))
+            assert upd30["port_call"]["eta"] == "2026-11-13 08:00"
+            assert upd30["port_call"]["etd"] == "2026-11-16 18:00"
+            rksp30 = next(i for i in upd30["checklist"]["items"] if i["category"] == "rksp")
+            assert rksp30["deadline"] == "2026-11-12 08:00", f"RKSP harus ETA-24 jam yang baru, dapat {rksp30['deadline']}"
+        _expect_400(f"/api/port-calls/{pc3}/update",
+                    {"eta": "2026-11-13 08:00", "etd": "2026-11-16 18:00",
+                     "cargo_name": "Batu Bara", "cargo_tonnage": 60000}, "Tidak ada perubahan")
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc3}/audit-logs") as res:
+            logs30 = json.loads(res.read().decode("utf-8"))["audit_logs"]
+            assert any(l["action"] == "PORT_CALL_UPDATE" for l in logs30), "Audit harus berisi PORT_CALL_UPDATE"
+        print("[TEST 30/30] ADR-0017: koreksi ETA/ETD/muatan, checklist hitung ulang, audit tercatat.")
+
+        # 31. Lengkapi FDA + blocker close-finance (ADR-0017): FDA,
+        # NTPN, dan nomor billing diubah pada baris yang sama (bukan
+        # baris baru); close-finance ditolak bila ada sengketa OPEN
+        # atau FDA masih 0 pada baris yang PDA-nya terisi.
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc27}/disbursements",
+                {"category": "HUSBANDRY", "item_name": "Bunkering", "pda_estimate": 50000000, "fda_actual": 0})) as res:
+            assert res.status == 200
+            dis31a = json.loads(res.read().decode("utf-8"))["disbursement_id"]
+        with urllib.request.urlopen(_post(f"/api/disbursements/{dis31a}",
+                {"fda_actual": 52000000, "ntpn": "NTPN123", "simponi_billing": "BILL456"})) as res:
+            assert res.status == 200
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc27}") as res:
+            det31 = json.loads(res.read().decode("utf-8"))
+            d31 = next(d for d in det31["disbursements"] if d["id"] == dis31a)
+            assert d31["fda_actual"] == 52000000 and d31["ntpn"] == "NTPN123" and d31["simponi_billing"] == "BILL456"
+            assert d31["pda_estimate"] == 50000000, "PDA tidak boleh berubah saat melengkapi FDA"
+        _expect_400(f"/api/disbursements/{dis31a}", {"fda_actual": "rusak"}, "harus angka")
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc27}/disbursements",
+                {"category": "HUSBANDRY", "item_name": "Air Tawar", "pda_estimate": 1000000, "fda_actual": 0})) as res:
+            assert res.status == 200
+            dis31b = json.loads(res.read().decode("utf-8"))["disbursement_id"]
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc27}/dispute",
+                {"disbursement_id": dis31a, "disputed_amount": 2000000, "reason": "tarif bunker melebihi PDA"})) as res:
+            assert res.status == 200
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc27}/milestone",
+                {"milestone_code": "SAILED", "event_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "remarks": "Berangkat"})) as res:
+            assert res.status == 200
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc27}/close-ops", {"user": "Capt. Hadi"})) as res:
+            assert res.status == 200
+        try:
+            fin_opener.open(_post(f"/api/port-calls/{pc27}/close-finance", {"user": "Finance Mgr"}))
+            assert False, "close-finance harus ditolak bila ada sengketa OPEN / FDA 0"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+            body31 = json.loads(e.read().decode("utf-8"))
+            assert body31.get("blockers"), "Respons 400 close-finance harus berisi daftar blockers"
+            assert any("Sengketa OPEN: Bunkering" in b for b in body31["blockers"]), f"Blocker harus menyebut sengketa Bunkering, dapat {body31['blockers']}"
+            assert any("FDA belum diisi: Air Tawar" in b for b in body31["blockers"]), f"Blocker harus menyebut FDA Air Tawar, dapat {body31['blockers']}"
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc27}") as res:
+            dp31 = json.loads(res.read().decode("utf-8"))["disputes"][0]["id"]
+        with fin_opener.open(_post(f"/api/disputes/{dp31}/resolve",
+                {"status": "ACCEPTED_REVISED", "resolution_notes": "Disetujui sebagian"})) as res:
+            assert res.status == 200
+        with urllib.request.urlopen(_post(f"/api/disbursements/{dis31b}", {"fda_actual": 1100000})) as res:
+            assert res.status == 200
+        with fin_opener.open(_post(f"/api/port-calls/{pc27}/close-finance", {"user": "Finance Mgr"})) as res:
+            assert res.status == 200
+        print("[TEST 31/31] ADR-0017: lengkapi FDA di baris yang sama, close-finance diblokir sengketa OPEN & FDA 0.")
+
+        # 32. Form fixture + simpan laytime (ADR-0017): parameter CP
+        # bisa diubah dari recap; hitung laytime menyimpan hasil dan
+        # NOR/mulai/selesai sebagai milestone; handover membawanya.
+        _expect_status(fin_opener, f"/api/port-calls/{pc3}/charter-party",
+                       {"loading_rate_per_day": 5000}, 403, "OPS atau ADMIN")
+        _expect_400(f"/api/port-calls/{pc3}/charter-party",
+                    {"laytime_terms": "WWD"}, "SHINC atau SHEX")
+        _expect_400(f"/api/port-calls/{pc3}/charter-party",
+                    {"loading_rate_per_day": 0}, "lebih dari 0")
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc3}/charter-party",
+                {"loading_rate_per_day": 5000, "laytime_terms": "SHEX",
+                 "demurrage_usd_per_day": 30000, "despatch_usd_per_day": 15000,
+                 "nor_notice_hours": 12})) as res:
+            assert res.status == 200
+            cp32 = json.loads(res.read().decode("utf-8"))["charter_party"]
+            assert cp32["loading_rate_per_day"] == 5000 and cp32["laytime_terms"] == "SHEX"
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc3}/laytime/calculate",
+                {"nor_tendered_time": "2026-11-13 08:00", "commenced_time": "2026-11-13 14:00",
+                 "completed_time": "2026-11-16 14:00"})) as res:
+            assert res.status == 200
+            lt32 = json.loads(res.read().decode("utf-8"))
+            assert lt32.get("saved") is True and lt32.get("calculation_id")
+            assert lt32["terms"] == "SHEX"
+            assert lt32["sundays_excluded"]["count"] == 1, f"SHEX harus mengecualikan Minggu 15 Nov, dapat {lt32['sundays_excluded']}"
+            assert set(lt32["milestones_saved"]) == {"NOR_TENDERED", "COMMENCED_CARGO", "COMPLETED_CARGO"}
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc3}") as res:
+            det32 = json.loads(res.read().decode("utf-8"))
+            assert det32["latest_laytime"] is not None
+            assert det32["latest_laytime"]["terms"] == "SHEX"
+            assert det32["latest_laytime"]["claim_type"] == lt32["result"]["claim_type"]
+            ms32 = {m["milestone_code"]: m["event_time"] for m in det32["milestones"]}
+            assert ms32.get("NOR_TENDERED") == "2026-11-13 08:00"
+            assert ms32.get("COMMENCED_CARGO") == "2026-11-13 14:00"
+            assert ms32.get("COMPLETED_CARGO") == "2026-11-16 14:00"
+        # Hitung ulang dengan waktu yang sama: tidak ada milestone ganda.
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc3}/laytime/calculate",
+                {"nor_tendered_time": "2026-11-13 08:00", "commenced_time": "2026-11-13 14:00",
+                 "completed_time": "2026-11-16 14:00"})) as res:
+            assert res.status == 200
+            assert json.loads(res.read().decode("utf-8"))["milestones_saved"] == []
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc3}") as res:
+            det32 = json.loads(res.read().decode("utf-8"))
+            assert sum(1 for m in det32["milestones"] if m["milestone_code"] == "NOR_TENDERED") == 1
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc3}/handover") as res:
+            ho32 = json.loads(res.read().decode("utf-8"))["handover_text"]
+            assert "Laytime Terakhir:" in ho32 and lt32["result"]["claim_type"] in ho32
+        print("[TEST 32/32] ADR-0017: fixture CP tersimpan, laytime tersimpan + milestone, handover membawa hasil.")
+
+        # 33. Papan shift (ADR-0017): ringkasan per port call — dokumen
+        # lewat tenggat, SPB < 6 jam, sandar tapi SPB belum diterbitkan,
+        # sengketa OPEN; port call CLOSED tidak masuk papan.
+        with urllib.request.urlopen(_post("/api/port-calls",
+                {"vessel_imo": "9876543", "port_code": "IDTPP",
+                 "terminal_name": "JICT (Jakarta Int. Container Terminal)",
+                 "cargo_name": "Batu Bara", "cargo_tonnage": 50000,
+                 "eta": "2026-11-01 08:00", "vessel_category": "FOREIGN"})) as res:
+            assert res.status == 200
+            pc33a = json.loads(res.read().decode("utf-8"))["port_call_id"]
+        with urllib.request.urlopen(_post("/api/port-calls",
+                {"vessel_imo": "9876543", "port_code": "IDTPP",
+                 "terminal_name": "JICT (Jakarta Int. Container Terminal)",
+                 "cargo_name": "Batu Bara", "cargo_tonnage": 50000,
+                 "eta": "2026-11-12 08:00", "vessel_category": "FOREIGN"})) as res:
+            assert res.status == 200
+            pc33b = json.loads(res.read().decode("utf-8"))["port_call_id"]
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc33b}") as res:
+            det33 = json.loads(res.read().decode("utf-8"))
+        for cl in det33["clearances"]:
+            if "SPB" in cl["doc_type"]:
+                continue
+            with urllib.request.urlopen(_post(f"/api/clearances/{cl['id']}/update",
+                    {"doc_number": f"DOC-{cl['id']}-2026", "status": "APPROVED"})) as res:
+                assert res.status == 200
+        # SPB terbit 19 jam lalu -> sisa ~5 jam (di bawah 6 jam).
+        old33 = (datetime.now() - timedelta(hours=19)).strftime("%Y-%m-%d %H:%M:%S")
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc33b}/spb",
+                {"doc_number": "SPB.PAPAN.001", "issued_at": old33})) as res:
+            assert res.status == 200
+        # Sengketa OPEN di pc3 (BERTHED, tanpa SPB -> needs_spb).
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc3}/disbursements",
+                {"category": "HUSBANDRY", "item_name": "Tunda", "pda_estimate": 2000000, "fda_actual": 2000000})) as res:
+            assert res.status == 200
+            dis33 = json.loads(res.read().decode("utf-8"))["disbursement_id"]
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc3}/dispute",
+                {"disbursement_id": dis33, "disputed_amount": 300000, "reason": "tarif tunda"})) as res:
+            assert res.status == 200
+        with urllib.request.urlopen(f"{base_url}/api/shift-board") as res:
+            assert res.status == 200
+            board = json.loads(res.read().decode("utf-8"))
+            cards = {c["id"]: c for c in board["cards"]}
+            assert pc2 not in cards, "Port call CLOSED tidak boleh masuk papan shift"
+            assert pc3 in cards and pc33a in cards and pc33b in cards
+            # pc33a: ETA 1 Nov (lewat) + template SUBMITTED -> dokumen lewat tenggat.
+            assert len(cards[pc33a]["overdue_docs"]) >= 1, f"pc33a harus punya dokumen lewat tenggat, dapat {cards[pc33a]}"
+            # pc33b: SPB sisa ~5 jam.
+            assert cards[pc33b]["spb_state"] == "under_6h", f"pc33b SPB harus under_6h, dapat {cards[pc33b]}"
+            assert 0 < cards[pc33b]["spb_hours_left"] <= 6
+            # pc3: BERTHED tanpa SPB + sengketa OPEN.
+            assert cards[pc3]["needs_spb"] is True, f"pc3 BERTHED tanpa SPB harus needs_spb, dapat {cards[pc3]}"
+            assert len(cards[pc3]["open_disputes"]) == 1
+            assert board["totals"]["overdue_docs"] >= 1
+            assert board["totals"]["spb_under_6h"] >= 1
+            assert board["totals"]["needs_spb"] >= 1
+            assert board["totals"]["open_disputes"] >= 1
+        print("[TEST 33/33] ADR-0017: papan shift merangkum dokumen lewat tenggat, SPB < 6 jam, needs_spb, sengketa OPEN.")
 
         print("\nSEMUA INTEGRATION TEST LULUS (100% VERIFIED)!")
 

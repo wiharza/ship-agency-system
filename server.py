@@ -417,6 +417,91 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             if self._require_auth() is None:
                 return
 
+        if path == "/api/shift-board":
+            # Papan tugas shift (ADR-0017): satu layar untuk petugas jaga —
+            # dokumen lewat tenggat, SPB sisa < 6 jam, kapal sudah sandar
+            # tapi SPB belum diterbitkan, sengketa FDA masih OPEN. Datanya
+            # sudah ada (checklist + spb_expiry_at + disputes); endpoint
+            # ini hanya meringkasnya per port call supaya petugas tidak
+            # perlu membuka satu per satu. Menggantikan notifikasi email
+            # untuk tim kecil (Q21 belum dibangun).
+            conn = get_db()
+            c = conn.cursor()
+            c.execute("""
+            SELECT pc.*, v.name as vessel_name, v.flag as vessel_flag, p.name as port_name, pr.name as principal_name, b.name as branch_name
+            FROM port_calls pc
+            JOIN master_vessels v ON pc.vessel_imo = v.imo
+            JOIN master_ports p ON pc.port_code = p.code
+            JOIN master_principals pr ON pc.principal_id = pr.id
+            JOIN master_branches b ON pc.branch_id = b.id
+            WHERE pc.status != 'CLOSED'
+            ORDER BY pc.created_at DESC
+            """)
+            pcs = [dict(r) for r in c.fetchall()]
+            c.execute("SELECT * FROM clearances")
+            clearances_by_pc = {}
+            for r in c.fetchall():
+                clearances_by_pc.setdefault(r["port_call_id"], []).append(dict(r))
+            c.execute("""
+            SELECT d.port_call_id, d.disputed_amount, dis.item_name
+            FROM fda_disputes d
+            JOIN disbursements dis ON d.disbursement_id = dis.id
+            WHERE d.status = 'OPEN'
+            """)
+            disputes_by_pc = {}
+            for r in c.fetchall():
+                disputes_by_pc.setdefault(r["port_call_id"], []).append(
+                    {"item_name": r["item_name"], "disputed_amount": r["disputed_amount"]})
+            conn.close()
+
+            now = datetime.now()
+            cards = []
+            totals = {"overdue_docs": 0, "spb_under_6h": 0, "spb_expired": 0,
+                      "needs_spb": 0, "open_disputes": 0, "active_calls": len(pcs)}
+            for pc in pcs:
+                chk = build_clearance_checklist(pc, clearances_by_pc.get(pc["id"], []))
+                overdue = [i["doc_type"] for i in chk["items"] if i["overdue"]]
+                spb_state = "none"
+                spb_hours_left = None
+                if pc.get("spb_expiry_at"):
+                    try:
+                        delta = parse_iso(pc["spb_expiry_at"]) - now
+                        spb_hours_left = round(delta.total_seconds() / 3600, 1)
+                        if delta.total_seconds() <= 0:
+                            spb_state = "expired"
+                        elif delta <= timedelta(hours=6):
+                            spb_state = "under_6h"
+                        else:
+                            spb_state = "ok"
+                    except Exception:
+                        spb_state = "none"
+                needs_spb = pc["status"] == "BERTHED" and not pc.get("spb_issued_at")
+                open_dis = disputes_by_pc.get(pc["id"], [])
+                totals["overdue_docs"] += len(overdue)
+                totals["spb_under_6h"] += 1 if spb_state == "under_6h" else 0
+                totals["spb_expired"] += 1 if spb_state == "expired" else 0
+                totals["needs_spb"] += 1 if needs_spb else 0
+                totals["open_disputes"] += len(open_dis)
+                cards.append({
+                    "id": pc["id"], "vessel_name": pc["vessel_name"],
+                    "port_name": pc["port_name"], "status": pc["status"],
+                    "vessel_category": pc["vessel_category"],
+                    "eta": pc.get("eta"), "etd": pc.get("etd"),
+                    "overdue_docs": overdue,
+                    "spb_state": spb_state, "spb_hours_left": spb_hours_left,
+                    "needs_spb": needs_spb, "open_disputes": open_dis,
+                })
+            # Paling mendesak dulu: ada peringatan, lalu dokumen lewat
+            # tenggat terbanyak, lalu SPB paling dekat kedaluwarsa.
+            def _urgency(card):
+                has_alert = bool(card["overdue_docs"] or card["spb_state"] in ("under_6h", "expired")
+                                 or card["needs_spb"] or card["open_disputes"])
+                return (0 if has_alert else 1, -len(card["overdue_docs"]),
+                        card["spb_hours_left"] if card["spb_hours_left"] is not None else 9999)
+            cards.sort(key=_urgency)
+            self.send_json({"cards": cards, "totals": totals})
+            return
+
         if path == "/api/port-calls":
             conn = get_db()
             cursor = conn.cursor()
@@ -517,6 +602,11 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 c.execute("SELECT * FROM spb_history WHERE port_call_id = ? ORDER BY id DESC", (pc_id,))
                 res["spb_history"] = [dict(r) for r in c.fetchall()]
 
+                # Hasil laytime terakhir yang tersimpan (ADR-0017)
+                c.execute("SELECT * FROM laytime_calculations WHERE port_call_id = ? ORDER BY id DESC LIMIT 1", (pc_id,))
+                _lt = c.fetchone()
+                res["latest_laytime"] = dict(_lt) if _lt else None
+
                 conn.close()
                 self.send_json(res)
                 return
@@ -567,8 +657,17 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 c.execute("SELECT milestone_code, event_time, remarks FROM milestones WHERE port_call_id = ? ORDER BY id DESC LIMIT 1", (pc_id,))
                 last_ms = c.fetchone()
 
+                # Hasil laytime terakhir yang tersimpan (ADR-0017)
+                c.execute("SELECT * FROM laytime_calculations WHERE port_call_id = ? ORDER BY id DESC LIMIT 1", (pc_id,))
+                last_lt = c.fetchone()
+
                 conn.close()
 
+                lt_line = ("Tidak ada hitung laytime tersimpan" if not last_lt else
+                           f"{last_lt['claim_type']} ${last_lt['amount_usd']:,.2f} — "
+                           f"NOR {last_lt['nor_tendered_time']}, mulai {last_lt['commenced_time']}, "
+                           f"selesai {last_lt['completed_time']} ({last_lt['terms']}, "
+                           f"dihitung {last_lt['calculated_by']} {last_lt['calculated_at']})")
                 handover_text = (
                     f"=== RINGKASAN HANDOVER SHIFT TIM KEAGENAN (24/7) ===\n"
                     f"Port Call ID: {pc_id}\n"
@@ -576,6 +675,7 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     f"Posisi/Terminal: {pc['terminal_name']}\n"
                     f"Peristiwa Terakhir: {last_ms['milestone_code'] if last_ms else 'Belum ada'} pada {last_ms['event_time'] if last_ms else '-'}\n"
                     f"Izin & Dokumen Tertunda: {', '.join(pending_docs) if pending_docs else 'Nihil / Semua Disetujui'}\n"
+                    f"Laytime Terakhir: {lt_line}\n"
                     f"Peringatan Kritis: {'SPB Aktif! Perhatikan batas waktu 24 jam' if pc['spb_issued_at'] else 'Normal'}\n"
                     f"Waktu Dibuat: {datetime.now().strftime('%Y-%m-%d %H:%M:%S WIB')}\n"
                     f"======================================================"
@@ -707,10 +807,16 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 return
             conn = get_db()
             c = conn.cursor()
-            c.execute("SELECT id FROM port_calls WHERE id = ?", (pc_id,))
-            if not c.fetchone():
+            c.execute("SELECT id, finance_closed_at, finance_closed_by FROM port_calls WHERE id = ?", (pc_id,))
+            _pc = c.fetchone()
+            if not _pc:
                 conn.close()
                 self.send_json({"error": "Port Call tidak ditemukan"}, status=404)
+                return
+            lock_msg = _closed_lock_message(_pc)
+            if lock_msg:
+                conn.close()
+                self.send_json({"error": lock_msg}, status=400)
                 return
             with conn:
                 dis_id, err = _insert_disbursement(conn, pc_id, payload)
@@ -723,6 +829,62 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 return
             self.send_json({"status": "success", "disbursement_id": dis_id, "message": "Item PDA/FDA berhasil ditambahkan"})
             return
+
+        if path.startswith("/api/disbursements/"):
+            parts = path.strip("/").split("/")
+            # POST /api/disbursements/<id> — lengkapi baris PDA yang sudah
+            # ada (ADR-0017): di lapangan PDA dicatat dulu, NTPN dan
+            # realisasi FDA datang kemudian. Dulu satu-satunya jalan
+            # adalah menambah baris BARU, sehingga rekonsiliasi dobel.
+            # Kini fda_actual, NTPN, dan nomor billing diubah pada item
+            # yang sama (pda_estimate tidak disentuh).
+            if len(parts) >= 3:
+                dis_id = parts[2]
+                conn = get_db()
+                c = conn.cursor()
+                c.execute("SELECT * FROM disbursements WHERE id = ?", (dis_id,))
+                dis = c.fetchone()
+                if not dis:
+                    conn.close()
+                    self.send_json({"error": "Item biaya tidak ditemukan"}, status=404)
+                    return
+                c.execute("SELECT finance_closed_at, finance_closed_by FROM port_calls WHERE id = ?", (dis["port_call_id"],))
+                _pc = c.fetchone()
+                lock_msg = _closed_lock_message(_pc) if _pc else None
+                if lock_msg:
+                    conn.close()
+                    self.send_json({"error": lock_msg}, status=400)
+                    return
+                new_fda = dis["fda_actual"]
+                if "fda_actual" in payload:
+                    try:
+                        new_fda = float(payload.get("fda_actual"))
+                    except (TypeError, ValueError):
+                        conn.close()
+                        self.send_json({"error": "fda_actual harus angka (IDR)"}, status=400)
+                        return
+                    if new_fda < 0:
+                        conn.close()
+                        self.send_json({"error": "fda_actual tidak boleh negatif"}, status=400)
+                        return
+                new_ntpn = payload.get("ntpn", dis["ntpn"])
+                new_billing = payload.get("simponi_billing", dis["simponi_billing"])
+                new_invoice = payload.get("invoice_number", dis["invoice_number"])
+                if (new_fda == dis["fda_actual"] and new_ntpn == dis["ntpn"]
+                        and new_billing == dis["simponi_billing"] and new_invoice == dis["invoice_number"]):
+                    conn.close()
+                    self.send_json({"error": "Tidak ada perubahan (isi fda_actual, NTPN, atau nomor billing)"}, status=400)
+                    return
+                with conn:
+                    conn.execute("""
+                    UPDATE disbursements SET fda_actual = ?, ntpn = ?, simponi_billing = ?, invoice_number = ? WHERE id = ?
+                    """, (new_fda, new_ntpn, new_billing, new_invoice, dis_id))
+                    log_audit(conn, dis["port_call_id"], actor, "DISBURSEMENT_UPDATE",
+                              f"{dis['item_name']}: FDA {dis['fda_actual']} / NTPN {dis['ntpn'] or '-'} / Bill {dis['simponi_billing'] or '-'}",
+                              f"{dis['item_name']}: FDA {new_fda} / NTPN {new_ntpn or '-'} / Bill {new_billing or '-'}")
+                conn.close()
+                self.send_json({"status": "success", "message": "Item PDA/FDA berhasil dilengkapi"})
+                return
 
         if path == "/api/master/terminals":
             port_code = payload.get("port_code")
@@ -1033,6 +1195,82 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
 
         if path.startswith("/api/port-calls/"):
             parts = path.strip("/").split("/")
+
+            # POST /api/port-calls/<id>/update — koreksi ETA/ETD/muatan
+            # (ADR-0017): tenggat RKSP (ETA-24 jam) dan permohonan SPB
+            # (ETD-4 jam) dihitung dari dua kolom ini, tapi dulu tidak ada
+            # cara mengubahnya setelah port call dibuat — padahal ETA
+            # geser adalah kejadian harian. Sekali diubah, checklist
+            # dihitung ulang dari nilai baru (dikembalikan di respons)
+            # dan perubahannya masuk audit.
+            if len(parts) == 4 and parts[3] == "update":
+                pc_id = parts[2]
+                if actor_role not in ("OPS", "ADMIN"):
+                    self.send_json({"error": "Koreksi ETA/ETD/muatan hanya boleh dilakukan role OPS atau ADMIN"}, status=403)
+                    return
+                conn = get_db()
+                c = conn.cursor()
+                c.execute("SELECT * FROM port_calls WHERE id = ?", (pc_id,))
+                pc = c.fetchone()
+                if not pc:
+                    conn.close()
+                    self.send_json({"error": "Port Call tidak ditemukan"}, status=404)
+                    return
+                lock_msg = _closed_lock_message(pc)
+                if lock_msg:
+                    conn.close()
+                    self.send_json({"error": lock_msg}, status=400)
+                    return
+                new_eta = payload.get("eta", pc["eta"])
+                new_etd = payload.get("etd", pc["etd"])
+                new_cargo_name = payload.get("cargo_name", pc["cargo_name"])
+                new_tonnage = pc["cargo_tonnage"]
+                if "cargo_tonnage" in payload:
+                    try:
+                        new_tonnage = float(payload.get("cargo_tonnage"))
+                    except (TypeError, ValueError):
+                        conn.close()
+                        self.send_json({"error": "cargo_tonnage harus angka"}, status=400)
+                        return
+                    if new_tonnage < 0:
+                        conn.close()
+                        self.send_json({"error": "cargo_tonnage tidak boleh negatif"}, status=400)
+                        return
+                for _field, _val in (("eta", new_eta), ("etd", new_etd)):
+                    if _val:
+                        try:
+                            parse_iso(_val)
+                        except Exception as exc:
+                            conn.close()
+                            self.send_json({"error": f"Waktu {_field} tidak valid: {exc}. Pakai format YYYY-MM-DD HH:MM."}, status=400)
+                            return
+                if new_eta and new_etd and parse_iso(new_etd) < parse_iso(new_eta):
+                    conn.close()
+                    self.send_json({"error": "ETD tidak boleh lebih awal dari ETA"}, status=400)
+                    return
+                if (new_eta == pc["eta"] and new_etd == pc["etd"]
+                        and new_cargo_name == pc["cargo_name"] and new_tonnage == pc["cargo_tonnage"]):
+                    conn.close()
+                    self.send_json({"error": "Tidak ada perubahan (isi ETA, ETD, muatan, atau tonase)"}, status=400)
+                    return
+                with conn:
+                    conn.execute("""
+                    UPDATE port_calls SET eta = ?, etd = ?, cargo_name = ?, cargo_tonnage = ?, updated_at = ? WHERE id = ?
+                    """, (new_eta, new_etd, new_cargo_name, new_tonnage,
+                          datetime.now().strftime("%Y-%m-%d %H:%M:%S"), pc_id))
+                    log_audit(conn, pc_id, actor, "PORT_CALL_UPDATE",
+                              f"ETA {pc['eta']} / ETD {pc['etd'] or '-'} / {pc['cargo_name']} ({pc['cargo_tonnage']} MT)",
+                              f"ETA {new_eta} / ETD {new_etd or '-'} / {new_cargo_name} ({new_tonnage} MT)")
+                c.execute("SELECT * FROM clearances WHERE port_call_id = ? ORDER BY id ASC", (pc_id,))
+                clearances = [dict(r) for r in c.fetchall()]
+                c.execute("SELECT * FROM port_calls WHERE id = ?", (pc_id,))
+                updated = dict(c.fetchone())
+                conn.close()
+                self.send_json({"status": "success",
+                                "message": "ETA/ETD/muatan berhasil dikoreksi — checklist dihitung ulang",
+                                "port_call": updated,
+                                "checklist": build_clearance_checklist(updated, clearances)})
+                return
 
             # POST /api/port-calls/<id>/milestone
             if len(parts) == 4 and parts[3] == "milestone":
@@ -1362,6 +1600,98 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({"status": "success", "disbursement_id": dis_id, "message": "Item PDA/FDA berhasil ditambahkan"})
                 return
 
+            # POST /api/port-calls/<id>/charter-party — isi parameter
+            # fixture (ADR-0017): tiap port call baru dulu disisipkan
+            # charter party tetap (10.000 MT/hari, SHINC, demurrage
+            # 20.000, notice 6 jam) dan tidak ada cara mengubahnya —
+            # kalkulator memakai angka itu, bukan recap fixture. Kini
+            # petugas mengisi rate bongkar, SHINC/SHEX, tarif
+            # demurrage/despatch, dan jam notice dari recap.
+            if len(parts) == 4 and parts[3] == "charter-party":
+                pc_id = parts[2]
+                if actor_role not in ("OPS", "ADMIN"):
+                    self.send_json({"error": "Ubah parameter charter party hanya boleh dilakukan role OPS atau ADMIN"}, status=403)
+                    return
+                conn = get_db()
+                c = conn.cursor()
+                c.execute("SELECT id, finance_closed_at, finance_closed_by FROM port_calls WHERE id = ?", (pc_id,))
+                _pc = c.fetchone()
+                if not _pc:
+                    conn.close()
+                    self.send_json({"error": "Port Call tidak ditemukan"}, status=404)
+                    return
+                lock_msg = _closed_lock_message(_pc)
+                if lock_msg:
+                    conn.close()
+                    self.send_json({"error": lock_msg}, status=400)
+                    return
+                c.execute("SELECT * FROM port_call_charter_parties WHERE port_call_id = ?", (pc_id,))
+                cp = c.fetchone()
+                if not cp:
+                    conn.close()
+                    self.send_json({"error": "Data kontrak tidak ditemukan"}, status=404)
+                    return
+                new_rate = cp["loading_rate_per_day"]
+                new_terms = cp["laytime_terms"]
+                new_dem = cp["demurrage_usd_per_day"]
+                new_des = cp["despatch_usd_per_day"]
+                new_notice = cp["nor_notice_hours"]
+                new_charterer = cp["charterer_name"]
+                for _field in ("loading_rate_per_day", "demurrage_usd_per_day", "despatch_usd_per_day", "nor_notice_hours"):
+                    if _field in payload:
+                        try:
+                            _v = float(payload.get(_field))
+                        except (TypeError, ValueError):
+                            conn.close()
+                            self.send_json({"error": f"{_field} harus angka"}, status=400)
+                            return
+                        if _v < 0:
+                            conn.close()
+                            self.send_json({"error": f"{_field} tidak boleh negatif"}, status=400)
+                            return
+                        if _field == "loading_rate_per_day":
+                            if _v <= 0:
+                                conn.close()
+                                self.send_json({"error": "loading_rate_per_day harus lebih dari 0"}, status=400)
+                                return
+                            new_rate = _v
+                        elif _field == "demurrage_usd_per_day":
+                            new_dem = _v
+                        elif _field == "despatch_usd_per_day":
+                            new_des = _v
+                        else:
+                            new_notice = int(_v)
+                if "laytime_terms" in payload:
+                    if payload.get("laytime_terms") not in ("SHINC", "SHEX"):
+                        conn.close()
+                        self.send_json({"error": "laytime_terms wajib SHINC atau SHEX"}, status=400)
+                        return
+                    new_terms = payload.get("laytime_terms")
+                if "charterer_name" in payload and payload.get("charterer_name"):
+                    new_charterer = payload.get("charterer_name")
+                if (new_rate == cp["loading_rate_per_day"] and new_terms == cp["laytime_terms"]
+                        and new_dem == cp["demurrage_usd_per_day"] and new_des == cp["despatch_usd_per_day"]
+                        and new_notice == cp["nor_notice_hours"] and new_charterer == cp["charterer_name"]):
+                    conn.close()
+                    self.send_json({"error": "Tidak ada perubahan (isi rate, terms, tarif, atau jam notice)"}, status=400)
+                    return
+                with conn:
+                    conn.execute("""
+                    UPDATE port_call_charter_parties
+                    SET charterer_name = ?, loading_rate_per_day = ?, laytime_terms = ?,
+                        demurrage_usd_per_day = ?, despatch_usd_per_day = ?, nor_notice_hours = ?
+                    WHERE port_call_id = ?
+                    """, (new_charterer, new_rate, new_terms, new_dem, new_des, new_notice, pc_id))
+                    log_audit(conn, pc_id, actor, "CHARTER_PARTY_UPDATE",
+                              f"{cp['loading_rate_per_day']} MT/hari {cp['laytime_terms']} dem {cp['demurrage_usd_per_day']} desp {cp['despatch_usd_per_day']} notice {cp['nor_notice_hours']} jam",
+                              f"{new_rate} MT/hari {new_terms} dem {new_dem} desp {new_des} notice {new_notice} jam")
+                conn.close()
+                self.send_json({"status": "success", "message": "Parameter charter party berhasil disimpan",
+                                "charter_party": {"charterer_name": new_charterer, "loading_rate_per_day": new_rate,
+                                                  "laytime_terms": new_terms, "demurrage_usd_per_day": new_dem,
+                                                  "despatch_usd_per_day": new_des, "nor_notice_hours": new_notice}})
+                return
+
             # POST /api/port-calls/<id>/laytime/calculate
             if len(parts) == 5 and parts[3] == "laytime" and parts[4] == "calculate":
                 pc_id = parts[2]
@@ -1369,12 +1699,20 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 c = conn.cursor()
                 c.execute("SELECT * FROM port_call_charter_parties WHERE port_call_id = ?", (pc_id,))
                 cp = c.fetchone()
-                c.execute("SELECT cargo_tonnage FROM port_calls WHERE id = ?", (pc_id,))
+                c.execute("SELECT cargo_tonnage, status, finance_closed_at, finance_closed_by FROM port_calls WHERE id = ?", (pc_id,))
                 pc = c.fetchone()
 
                 if not cp or not pc:
                     conn.close()
                     self.send_json({"error": "Data kontrak atau kargo tidak lengkap"}, status=400)
+                    return
+                # Hitung laytime kini MENYIMPAN (ADR-0017) — milestone dan
+                # baris hasil ikut ditulis — jadi kunci CLOSED berlaku:
+                # arsip yang sudah CLOSED tidak boleh dihitung ulang.
+                lock_msg = _closed_lock_message(pc)
+                if lock_msg:
+                    conn.close()
+                    self.send_json({"error": lock_msg}, status=400)
                     return
 
                 c.execute("SELECT * FROM sof_stoppages WHERE port_call_id = ? ORDER BY start_time ASC", (pc_id,))
@@ -1388,7 +1726,6 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     }
                     for r in c.fetchall()
                 ]
-                conn.close()
 
                 nor_str = payload.get("nor_tendered_time", "2026-11-01 08:00")
                 comm_str = payload.get("commenced_time", "2026-11-01 14:00")
@@ -1405,6 +1742,7 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 try:
                     result = calc.calculate(nor_str, comm_str, comp_str, stoppages)
                 except ValueError as exc:
+                    conn.close()
                     # Waktu salah format sebelumnya melempar ke 500
                     # ("Kesalahan internal server" di WSGI; koneksi putus
                     # tanpa respons di server lokal) — kini 400 yang
@@ -1417,6 +1755,56 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     else:
                         self.send_json({"error": msg}, status=400)
                     return
+                # Simpan hasil + NOR/mulai/selesai sebagai milestone
+                # (ADR-0017): dulu ketiga waktu itu hanya angka di layar —
+                # shift berikutnya tidak bisa melihatnya di SOF, dan hasil
+                # hitung hilang begitu halaman dimuat ulang. Upsert per
+                # kode: bila milestone berkode itu belum ada, buat baru
+                # (status maju mengikuti aturan yang sama dengan POST
+                # milestone); bila sudah ada dan waktunya berubah, koreksi
+                # waktunya saja (status tidak disentuh).
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                saved_milestones = []
+                with conn:
+                    for _code, _time, _target in (
+                            ("NOR_TENDERED", nor_str, None),
+                            ("COMMENCED_CARGO", comm_str, "BERTHED"),
+                            ("COMPLETED_CARGO", comp_str, None)):
+                        c.execute("SELECT id, event_time FROM milestones WHERE port_call_id = ? AND milestone_code = ? ORDER BY id ASC LIMIT 1",
+                                  (pc_id, _code))
+                        _existing = c.fetchone()
+                        if _existing:
+                            if _existing["event_time"] != _time:
+                                conn.execute("UPDATE milestones SET event_time = ? WHERE id = ?",
+                                             (_time, _existing["id"]))
+                                log_audit(conn, pc_id, actor, "MILESTONE_UPDATE",
+                                          f"{_code} @ {_existing['event_time']}",
+                                          f"{_code} @ {_time} (dari hitung laytime; status kapal tidak berubah)")
+                                saved_milestones.append(_code)
+                        else:
+                            conn.execute("""
+                            INSERT INTO milestones (port_call_id, milestone_code, event_time, recorded_by, remarks)
+                            VALUES (?, ?, ?, ?, ?)
+                            """, (pc_id, _code, _time, actor, "Dari hitung laytime"))
+                            log_audit(conn, pc_id, actor, f"MILESTONE_{_code}",
+                                      None, f"{_code} @ {_time} (dari hitung laytime)")
+                            saved_milestones.append(_code)
+                            if _target and _STATUS_RANK[_target] > _STATUS_RANK[pc["status"]]:
+                                conn.execute("UPDATE port_calls SET status = ?, updated_at = ? WHERE id = ?",
+                                             (_target, now_str, pc_id))
+                    cur = conn.execute("""
+                    INSERT INTO laytime_calculations (port_call_id, nor_tendered_time, commenced_time, completed_time, terms, allowed_days, used_days, claim_type, amount_usd, calculated_by, calculated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (pc_id, nor_str, comm_str, comp_str, result["terms"],
+                          result["laytime_allowed"]["days_decimal"],
+                          result["laytime_used"]["net_seconds"] / 86400,
+                          result["result"]["claim_type"], result["result"]["amount_usd"],
+                          actor, now_str))
+                    calc_id = cur.lastrowid
+                conn.close()
+                result["saved"] = True
+                result["calculation_id"] = calc_id
+                result["milestones_saved"] = saved_milestones
                 self.send_json(result)
                 return
 
@@ -1502,6 +1890,30 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 if row["finance_closed_at"]:
                     conn.close()
                     self.send_json({"error": f"Port call sudah CLOSED oleh {row['finance_closed_by']} pada {row['finance_closed_at']} — Otorisasi 2 tidak bisa diulang"}, status=400)
+                    return
+                # Blocker keuangan (ADR-0017): Otorisasi 2 ditolak bila
+                # masih ada sengketa OPEN atau FDA masih 0 pada baris
+                # yang PDA-nya sudah terisi — dengan daftar itemnya, pola
+                # yang sama seperti blocker close-ops (ADR-0015). Sengketa
+                # UNDER_REVIEW tidak menghalangi (masih bisa diselesaikan
+                # setelah CLOSED — pengecualian kunci CLOSED).
+                c.execute("""
+                SELECT d.item_name FROM disbursements d
+                JOIN fda_disputes f ON f.disbursement_id = d.id
+                WHERE d.port_call_id = ? AND f.status = 'OPEN'
+                """, (pc_id,))
+                open_disputes = [r["item_name"] for r in c.fetchall()]
+                c.execute("""
+                SELECT item_name FROM disbursements
+                WHERE port_call_id = ? AND pda_estimate > 0 AND (fda_actual IS NULL OR fda_actual = 0)
+                """, (pc_id,))
+                fda_pending = [r["item_name"] for r in c.fetchall()]
+                fin_blockers = ([f"Sengketa OPEN: {n}" for n in open_disputes]
+                                + [f"FDA belum diisi: {n}" for n in fda_pending])
+                if fin_blockers:
+                    conn.close()
+                    self.send_json({"error": "Otorisasi 2 ditolak — rekonsiliasi FDA belum selesai",
+                                    "blockers": fin_blockers}, status=400)
                     return
 
                 with conn:

@@ -1144,7 +1144,7 @@ def test_integration():
             _prepare_database_once()
         finally:
             os.environ["AGENCY_DB_FILE"] = old_db_file
-        print("[TEST 34/36] ADR-0018: cold start melengkapi tabel baru di DB lama tanpa menyentuh data.")
+        print("[TEST 34/38] ADR-0018: cold start melengkapi tabel baru di DB lama tanpa menyentuh data.")
         # 35. Test Validasi Input (ADR-0019): whitelist + normalisasi
         #     clearance, milestone_code wajib, laytime wajib 3 waktu,
         #     JSON rusak -> 400 (bukan koneksi putus / data demo tersimpan).
@@ -1212,7 +1212,7 @@ def test_integration():
         _expect_raw_400("/api/login", b"[1, 2, 3]", "Body JSON harus berupa objek")
         with urllib.request.urlopen(f"{base_url}/api/port-calls") as res:
             assert res.status == 200, "Server harus tetap hidup setelah body rusak"
-        print("[TEST 35/36] ADR-0019: validasi whitelist/normalisasi clearance+milestone, laytime wajib 3 waktu, JSON rusak 400.")
+        print("[TEST 35/38] ADR-0019: validasi whitelist/normalisasi clearance+milestone, laytime wajib 3 waktu, JSON rusak 400.")
 
         # 36. Test Security Headers + /api/health (ADR-0019).
         anon_opener = urllib.request.build_opener()  # tanpa cookie
@@ -1229,7 +1229,165 @@ def test_integration():
             assert res.headers.get("X-Frame-Options") == "DENY"
         with anon_opener.open(f"{base_url}/") as res:
             assert res.headers.get("X-Content-Type-Options") == "nosniff", "Halaman login juga harus membawa security headers"
-        print("[TEST 36/36] ADR-0019: /api/health tanpa auth + security headers di API, UI, dan halaman login.")
+        print("[TEST 36/38] ADR-0019: /api/health tanpa auth + security headers di API, UI, dan halaman login.")
+
+        # 37. Status VOID (ADR-0020): baris salah input dibatalkan — tetap
+        #     tersimpan sebagai riwayat, gate SPB + daftar tertunda
+        #     mengabaikannya, dan baris VOID tidak bisa diubah lagi.
+        #     Port call baru dengan ETA/ETD lampau supaya tenggat RKSP
+        #     dan MSD sudah lewat (overdue sebelum di-void).
+        with urllib.request.urlopen(_post("/api/port-calls",
+                {"vessel_imo": "9876543", "port_code": "IDTPP",
+                 "terminal_name": "JICT (Jakarta Int. Container Terminal)",
+                 "cargo_name": "Batu Bara", "cargo_tonnage": 50000,
+                 "eta": "2026-10-01 08:00", "etd": "2026-10-05 08:00",
+                 "vessel_category": "FOREIGN"})) as res:
+            assert res.status == 200
+            pc37 = json.loads(res.read().decode("utf-8"))["port_call_id"]
+
+        def _chk37():
+            with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc37}/clearance-checklist") as res:
+                return json.loads(res.read().decode("utf-8"))
+
+        def _row37(doc_type):
+            with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc37}") as res:
+                det = json.loads(res.read().decode("utf-8"))
+            return next(c for c in det["clearances"] if c["doc_type"] == doc_type)
+
+        chk = _chk37()
+        rksp = next(i for i in chk["items"] if i["category"] == "rksp")
+        msd = next(i for i in chk["items"] if i["category"] == "msd")
+        assert rksp["status"] == "PENDING" and rksp["overdue"], f"RKSP template harus PENDING + overdue, dapat {rksp}"
+        assert msd["status"] == "PENDING" and msd["overdue"], f"MSD template harus PENDING + overdue, dapat {msd}"
+        assert any("Master Sailing" in b for b in chk["blockers"]), f"MSD harus memblokir SPB, dapat {chk['blockers']}"
+        assert any("RKSP" in b for b in chk["blockers"]), "RKSP harus memblokir SPB"
+        # Void MSD (huruf kecil -> dinormalisasi): blocker bersyarat hilang,
+        # item tampil VOID dan tidak lagi overdue.
+        msd_row = _row37("Master Sailing Declaration")
+        with urllib.request.urlopen(_post(f"/api/clearances/{msd_row['id']}/update",
+                {"status": "void", "remarks": "Salah ketik — seharusnya bukan MSD"})) as res:
+            assert res.status == 200
+            assert "VOID" in json.loads(res.read().decode("utf-8"))["message"]
+        assert _row37("Master Sailing Declaration")["status"] == "VOID", "MSD harus tersimpan VOID"
+        chk = _chk37()
+        msd = next(i for i in chk["items"] if i["category"] == "msd")
+        assert msd["status"] == "VOID" and not msd["overdue"], f"MSD void harus tampil VOID tanpa overdue, dapat {msd}"
+        assert not any("Master Sailing" in b for b in chk["blockers"]), \
+            f"MSD yang di-void tidak boleh lagi memblokir SPB, dapat {chk['blockers']}"
+        # Void RKSP (wajib): blocker TETAP ada — void bukan persetujuan.
+        rksp_row = _row37("RKSP / BC 1.0")
+        with urllib.request.urlopen(_post(f"/api/clearances/{rksp_row['id']}/update",
+                {"status": "VOID", "remarks": "Salah tipe — diganti baris baru"})) as res:
+            assert res.status == 200
+        chk = _chk37()
+        rksp = next(i for i in chk["items"] if i["category"] == "rksp")
+        assert rksp["status"] == "VOID" and not rksp["overdue"], f"RKSP void harus tampil VOID tanpa overdue, dapat {rksp}"
+        assert any("RKSP" in b for b in chk["blockers"]), \
+            "RKSP wajib yang di-void harus TETAP memblokir SPB sampai ada baris baru yang APPROVED"
+        # Jalan keluarnya: tambah baris RKSP baru lalu APPROVED.
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc37}/clearance",
+                {"agency": "BEA_CUKAI", "doc_type": "RKSP / BC 1.0",
+                 "doc_number": "RKSP-2026-00099", "status": "APPROVED"})) as res:
+            assert res.status == 200
+        chk = _chk37()
+        assert not any("RKSP" in b for b in chk["blockers"]), "RKSP baru yang APPROVED harus menghapus blocker"
+        assert next(i for i in chk["items"] if i["category"] == "rksp")["status"] == "APPROVED"
+        # Baris VOID tidak bisa diubah lagi — final.
+        _expect_400(f"/api/clearances/{msd_row['id']}/update",
+                    {"status": "APPROVED"}, "sudah VOID")
+        # FINANCE tidak boleh mem-void.
+        inward_row = _row37("Inward Manifest / BC 1.1")
+        _expect_status(fin_opener, f"/api/clearances/{inward_row['id']}/update",
+                       {"status": "VOID"}, 403, "OPS/ADMIN")
+        assert _row37("Inward Manifest / BC 1.1")["status"] == "PENDING", \
+            "Percobaan void oleh FINANCE tidak boleh mengubah baris"
+        # Baris baru tidak bisa langsung VOID.
+        _expect_400(f"/api/port-calls/{pc37}/clearance",
+                    {"agency": "BEA_CUKAI", "doc_type": "Dokumen Uji VOID",
+                     "status": "VOID"}, "tidak bisa langsung VOID")
+        # Riwayat tetap ada: dua baris VOID masih tampil di detail.
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc37}") as res:
+            det37 = json.loads(res.read().decode("utf-8"))
+        voided = [c for c in det37["clearances"] if c["status"] == "VOID"]
+        assert len(voided) == 2, f"Harus ada 2 baris VOID sebagai riwayat, dapat {len(voided)}"
+        print("[TEST 37/38] ADR-0020: VOID membatalkan salah input — gate abaikan baris void bersyarat, wajib tetap blokir, VOID final + OPS/ADMIN.")
+
+        # 38. Migrasi CHECK VOID (ADR-0020): DB lama yang CHECK status-nya
+        #     belum mengenal VOID dinaikkan (rebuild tabel) tanpa menyentuh
+        #     data — lewat cold start Vercel maupun init_db().
+        from engine.db import _upgrade_clearances_void
+        from server import _prepare_database_once
+        old_db_file = os.environ["AGENCY_DB_FILE"]
+        legacy_db = os.path.join(_TEST_TMPDIR, "agency-legacy-void.db")
+
+        def _downgrade_clearances_check(conn):
+            # Turunkan skema ke CHECK lama (tanpa VOID): kebalikan migrasi.
+            with conn:
+                conn.execute("DROP TABLE IF EXISTS clearances_old_void_mig")
+                conn.execute("ALTER TABLE clearances RENAME TO clearances_old_void_mig")
+                conn.execute("""
+                CREATE TABLE clearances (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    port_call_id TEXT NOT NULL,
+                    agency TEXT NOT NULL CHECK(agency IN ('INAPORTNET_SIMPADU', 'INAPORTNET_SPS', 'BEA_CUKAI', 'IMIGRASI', 'KARANTINA_KESEHATAN', 'BARANTIN', 'BUP_PELINDO')),
+                    doc_type TEXT NOT NULL,
+                    doc_number TEXT,
+                    submission_time TEXT,
+                    approval_time TEXT,
+                    expiry_time TEXT,
+                    status TEXT NOT NULL CHECK(status IN ('PENDING', 'SUBMITTED', 'APPROVED', 'REJECTED', 'EXPIRED')),
+                    file_name TEXT,
+                    file_sha256 TEXT,
+                    remarks TEXT,
+                    submitted_by TEXT,
+                    FOREIGN KEY (port_call_id) REFERENCES port_calls (id)
+                )""")
+                conn.execute("INSERT INTO clearances SELECT * FROM clearances_old_void_mig")
+                conn.execute("DROP TABLE clearances_old_void_mig")
+
+        try:
+            os.environ["AGENCY_DB_FILE"] = legacy_db
+            init_db()
+            seed_sample_data()
+            conn = get_db()
+            _downgrade_clearances_check(conn)
+            n_cl_before = conn.execute("SELECT COUNT(*) FROM clearances").fetchone()[0]
+            ids_before = [r[0] for r in conn.execute("SELECT id FROM clearances ORDER BY id").fetchall()]
+            sql_before = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'clearances'").fetchone()[0]
+            assert "'VOID'" not in sql_before, "Setup: CHECK lama tidak boleh mengenal VOID"
+            conn.close()
+            # Jalur cold start Vercel menaikkan CHECK-nya.
+            _prepare_database_once()
+            conn = get_db()
+            sql_after = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'clearances'").fetchone()[0]
+            assert "'VOID'" in sql_after, "CHECK harus mengenal VOID setelah cold start"
+            n_cl_after = conn.execute("SELECT COUNT(*) FROM clearances").fetchone()[0]
+            ids_after = [r[0] for r in conn.execute("SELECT id FROM clearances ORDER BY id").fetchall()]
+            assert n_cl_after == n_cl_before and ids_after == ids_before, \
+                "Migrasi CHECK tidak boleh mengubah data lama"
+            conn.close()
+            # Jalur init_db() (server lokal) juga menaikkan — turunkan lagi,
+            # lalu init_db() saja.
+            conn = get_db()
+            _downgrade_clearances_check(conn)
+            conn.close()
+            init_db()
+            conn = get_db()
+            sql_after2 = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'clearances'").fetchone()[0]
+            assert "'VOID'" in sql_after2, "CHECK harus mengenal VOID setelah init_db()"
+            # Status VOID kini bisa disimpan (dulu CHECK menolaknya).
+            with conn:
+                conn.execute("INSERT INTO clearances (port_call_id, agency, doc_type, status) VALUES ('PC-2026-JKT-0001', 'BEA_CUKAI', 'Dokumen Uji VOID', 'VOID')")
+            assert conn.execute("SELECT status FROM clearances WHERE doc_type = 'Dokumen Uji VOID'").fetchone()[0] == "VOID"
+            conn.close()
+            # Panggil upgrade langsung dua kali: idempotent, tetap lulus.
+            c2 = get_db()
+            _upgrade_clearances_void(c2)
+            _upgrade_clearances_void(c2)
+            c2.close()
+        finally:
+            os.environ["AGENCY_DB_FILE"] = old_db_file
+        print("[TEST 38/38] ADR-0020: migrasi CHECK VOID (cold start + init_db) tanpa mengubah data; VOID bisa disimpan; idempotent.")
 
         print("\nSEMUA INTEGRATION TEST LULUS (100% VERIFIED)!")
 

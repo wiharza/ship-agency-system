@@ -26,6 +26,7 @@
     .badge-yellow { background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid #f59e0b; }
     .badge-green { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid #10b981; }
     .badge-cyan { background: rgba(6, 182, 212, 0.2); color: #22d3ee; border: 1px solid #06b6d4; }
+    .badge-gray { background: rgba(148, 163, 184, 0.15); color: #94a3b8; border: 1px solid #64748b; }
 
     .grid { display: grid; grid-template-columns: 320px 1fr; gap: 24px; }
     .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 20px; }
@@ -653,7 +654,7 @@
       clTable.innerHTML = '';
       (currentData.clearances || []).forEach(cl => {
         const tr = document.createElement('tr');
-        const badgeClass = cl.status === 'APPROVED' ? 'badge-green' : (cl.status === 'REJECTED' ? 'badge-red' : 'badge-yellow');
+        const badgeClass = cl.status === 'APPROVED' ? 'badge-green' : (cl.status === 'REJECTED' ? 'badge-red' : (cl.status === 'VOID' ? 'badge-gray' : 'badge-yellow'));
         tr.innerHTML = `
           <td><strong style="color:var(--cyan);">${esc(cl.agency)}</strong></td>
           <td>${esc(cl.doc_type)}</td>
@@ -1514,6 +1515,7 @@
           <option value="APPROVED">APPROVED (Disetujui / Terbit Resmi)</option>
           <option value="REJECTED">REJECTED (Ditolak / Butuh Revisi)</option>
           <option value="EXPIRED">EXPIRED (Kedaluwarsa)</option>
+          <option value="VOID">VOID (Batal — salah input; final, tidak bisa diubah lagi)</option>
         </select>
       </div>
 

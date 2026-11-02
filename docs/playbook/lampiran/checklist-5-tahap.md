@@ -2,7 +2,7 @@
 
 > Lihat juga **Lampiran: Checklist Clearance In & Out**
 > (`docs/playbook/lampiran/checklist-clearance-in-out.md`) — versi yang
-> selaras dengan template 12 item dan tenggat yang dihitung sistem
+> selaras dengan template 14 item dan tenggat yang dihitung sistem
 > (`GET /api/port-calls/<id>/clearance-checklist`): RKSP & warta kapal
 > ETA−24 jam, Inward Manifest sebelum bongkar/ETA−24 jam, Outward Manifest
 > sebelum ETD, permohonan SPB ETD−4 jam, SPB berlaku 24 jam.

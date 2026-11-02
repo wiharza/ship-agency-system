@@ -81,6 +81,10 @@ def _matches(doc_type, agency, category):
         return "MASTER SAILING" in t or "SAILING DECLARATION" in t or t.strip() == "MSD"
     if category == "pkka":
         return "PKKA" in t or "PPKKA" in t or "WARTA MASUK" in t
+    if category == "lk3":
+        return "LK3" in t
+    if category == "spkk":
+        return "SPKK" in t or "RKBM" in t
     if category == "spog_in":
         return "SPOG" in t and "MASUK" in t
     if category == "spog_out":
@@ -154,6 +158,9 @@ def build_clearance_checklist(pc, clearances):
          "PKKA / Pemberitahuan Kedatangan Kapal Asing" if is_foreign else "Warta Masuk / PKK",
          "INAPORTNET_SIMPADU", eta - timedelta(hours=24) if eta else None,
          "PM 28/2022 Ps 4: warta + dokumen paling lambat 1x24 jam sebelum tiba"),
+        ("CLEARANCE_IN", "lk3", "LK3 Masuk / Laporan Kedatangan Kapal",
+         "INAPORTNET_SIMPADU", eta + timedelta(hours=24) if eta else None,
+         "PM 59/2021 + PM 8/2022: paling lambat 1x24 jam setelah kedatangan"),
         ("CLEARANCE_IN", "rksp", "RKSP / BC 1.0", "BEA_CUKAI",
          eta - timedelta(hours=24) if eta else None,
          "PMK 158/2017 jo PMK 97/2020: paling lambat 24 jam sebelum kedatangan"),
@@ -166,6 +173,12 @@ def build_clearance_checklist(pc, clearances):
          eta, "UU 6/2011 Ps 18: pemberitahuan + crew list; shore pass via TPI"),
         ("CLEARANCE_IN", "spog_in", "SPOG Masuk", "INAPORTNET_SPS",
          eta, "PM 28/2022: persetujuan olah gerak masuk oleh Syahbandar"),
+        # ADR-0026: SPKK tidak punya tenggat tanggal — "sebelum derek
+        # pertama bekerja" adalah peristiwa, bukan jam. Deadline None
+        # (tidak pernah overdue); status PENDING/APPROVED yang dipantau.
+        ("CLEARANCE_IN", "spkk", "SPKK / RKBM (Persetujuan Kegiatan Kapal)",
+         "INAPORTNET_SIMPADU", None,
+         "PM 59/2021: sebelum derek pertama bekerja — HUKUM, penghentian paksa oleh Syahbandar"),
         ("CLEARANCE_OUT", "outward", "Outward Manifest / BC 1.1", "BEA_CUKAI",
          etd, "PMK 158/2017 jo PMK 97/2020: sebelum keberangkatan"),
         ("CLEARANCE_OUT", "phc_out", "Port Health Clearance Out", "KARANTINA_KESEHATAN",
@@ -1419,6 +1432,8 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                         template = [
                             ("INAPORTNET_SIMPADU", first_doc,
                              "Warta kedatangan — PM 28/2022 Ps 4: paling lambat 1x24 jam sebelum tiba"),
+                            ("INAPORTNET_SIMPADU", "LK3 Masuk / Laporan Kedatangan Kapal",
+                             "PM 59/2021 + PM 8/2022: paling lambat 1x24 jam setelah kedatangan"),
                             ("BEA_CUKAI", "RKSP / BC 1.0",
                              "PMK 158/2017 jo PMK 97/2020: paling lambat 24 jam sebelum kedatangan"),
                             ("BEA_CUKAI", "Inward Manifest / BC 1.1",
@@ -1429,6 +1444,8 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                              "UU 6/2011 Ps 18: pemberitahuan + crew list; shore pass via TPI"),
                             ("INAPORTNET_SPS", "SPOG Masuk",
                              "PM 28/2022: persetujuan olah gerak masuk oleh Syahbandar"),
+                            ("INAPORTNET_SIMPADU", "SPKK / RKBM (Persetujuan Kegiatan Kapal)",
+                             "PM 59/2021: sebelum derek pertama bekerja — HUKUM, penghentian paksa oleh Syahbandar"),
                             ("BEA_CUKAI", "Outward Manifest / BC 1.1",
                              "PMK 158/2017 jo PMK 97/2020: sebelum keberangkatan"),
                             ("KARANTINA_KESEHATAN", "Port Health Clearance Out",

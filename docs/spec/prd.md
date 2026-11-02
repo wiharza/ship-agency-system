@@ -94,9 +94,9 @@ Unit kerja pusat sistem adalah **Port Call** (Putusan Q12). Seluruh entitas teri
 Merujuk pada Putusan **Q18 & Q29**:
 - `id`: INTEGER AUTOINCREMENT di kode (bukan UUID).
 - **Template clearance baru (31 Okt 2026, ADR-0006):** setiap port call baru
-  otomatis mendapat 12 item — clearance-in: PKKA (asing) atau Warta Masuk /
+  otomatis mendapat 14 item — clearance-in: PKKA (asing) atau Warta Masuk /
   PKK (domestik), RKSP / BC 1.0, Inward Manifest / BC 1.1, MDH & Free
-  Pratique, Immigration Crew List, SPOG Masuk; clearance-out: Outward
+  Pratique, Immigration Crew List, SPOG Masuk, LK3 Masuk, SPKK / RKBM; clearance-out: Outward
   Manifest / BC 1.1, Port Health Clearance Out, Immigration Clearance Out,
   Master Sailing Declaration, SPOG Keluar, SPB. Daftar lengkap + tenggat:
   `docs/playbook/lampiran/checklist-clearance-in-out.md`.
@@ -227,7 +227,8 @@ dan kode bertentangan, tabel ini yang berlaku sampai salah satunya diperbaiki.
 
 | Fitur / klaim PRD | Status | Bukti di kode |
 |---|---|---|
-| Template clearance 12 item (ASING PKKA / DOMESTIK PKK) | ✅ Terimplementasi | `server.py` POST /api/port-calls; `tests/test_api.py` TEST 13 |
+| Template clearance 14 item (ASING PKKA / DOMESTIK PKK) | ✅ Terimplementasi | `server.py` POST /api/port-calls; `tests/test_api.py` TEST 13 |
+| LK3 Masuk + SPKK/RKBM di template (ADR-0026) | ✅ Terimplementasi | Template 12 -> 14 item: LK3 Masuk (INAPORTNET_SIMPADU, tenggat ETA+24 jam, PM 59/2021 + PM 8/2022) + SPKK/RKBM (INAPORTNET_SIMPADU, tanpa tenggat tanggal — "sebelum derek pertama bekerja" adalah peristiwa). Gate SPB TIDAK berubah (keduanya PENDING tidak memblokir SPB). Port call lama menampilkan keduanya "BELUM ADA"; seed PC mendapat keduanya APPROVED via migrasi seed. TEST 43 |
 | Gate SPB (400 + blockers) | ✅ Terimplementasi | `server.py` POST .../spb + `clearance_spb_gate()`; TEST 13/13b |
 | Gate close-ops + gate DEPARTED (400 bila SPB belum terbit/kedaluwarsa atau status belum DEPARTED; milestone CAST_OFF/SAILED tanpa SPB valid tetap tercatat tapi tidak jadi DEPARTED; atd diisi dari event_time) | ✅ Terimplementasi | `server.py` POST .../close-ops + POST .../milestone; TEST 16a–16e |
 | Persistensi Turso (libSQL remote, opsional) | ✅ Terimplementasi + terverifikasi remote | `engine/db.py:get_db()` env-based + adapter `_Row`/`_LibSQLConnection`; `requirements.txt` (libsql); `scripts/migrate_to_turso.py`; `tests/test_libsql_backend.py`. Diverifikasi 31 Okt 2026 terhadap Turso remote sungguhan (DB agency-yansen, ap-southeast-1): row_factory, FK, transaksi `with conn:`, alur gate end-to-end — semua lulus; data contoh ter-seed di Turso. Token tidak pernah masuk Git. |

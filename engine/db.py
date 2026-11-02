@@ -776,6 +776,8 @@ def seed_sample_data():
     # 5 item clearance), tambahkan item gate SPB yang belum ada sebagai
     # APPROVED dengan nomor contoh, agar sample tetap lolos gate SPB.
     gate_items = [
+        ("INAPORTNET_SIMPADU", "LK3 Masuk / Laporan Kedatangan Kapal", "LK3-IN-2026-552", "Warta LK3 Masuk terverifikasi"),
+        ("INAPORTNET_SIMPADU", "SPKK / RKBM (Persetujuan Kegiatan Kapal)", "SPKK-2026-118", "SPKK terbit sebelum derek bekerja"),
         ("IMIGRASI", "Immigration Crew List", "IMM-CL-2026-441", "Crew list + paspor diperiksa TPI"),
         ("BEA_CUKAI", "Outward Manifest / BC 1.1", "BC11-OUT-7713", "Manifes keluar diserahkan sebelum berlayar"),
         ("KARANTINA_KESEHATAN", "Port Health Clearance Out", "PHC-OUT-2026-118", "Pemeriksaan karantina keberangkatan selesai"),

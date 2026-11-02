@@ -342,7 +342,7 @@ def test_integration():
             new_pc = json.loads(res.read().decode("utf-8"))["port_call_id"]
         with urllib.request.urlopen(f"{base_url}/api/port-calls/{new_pc}") as res:
             det = json.loads(res.read().decode("utf-8"))
-            assert len(det["clearances"]) == 12, f"Template baru harus 12 item, dapat {len(det['clearances'])}"
+            assert len(det["clearances"]) == 14, f"Template baru harus 14 item, dapat {len(det['clearances'])}"
             assert any(c["doc_type"].startswith("PKKA") for c in det["clearances"]), "Kapal asing harus pakai PKKA"
         req_spb_bad = urllib.request.Request(
             f"{base_url}/api/port-calls/{new_pc}/spb",
@@ -384,7 +384,7 @@ def test_integration():
             assert res.status == 200
             chk = json.loads(res.read().decode("utf-8"))
             assert chk["can_issue_spb"] is True
-            assert len(chk["clearance_in"]) == 6 and len(chk["clearance_out"]) == 6
+            assert len(chk["clearance_in"]) == 8 and len(chk["clearance_out"]) == 6
             rksp = next(i for i in chk["items"] if i["category"] == "rksp")
             assert rksp["deadline"] == "2026-11-09 08:00", f"RKSP deadline harus ETA-24 jam, dapat {rksp['deadline']}"
         # IMO uji harus unik per run (DB dipakai ulang antar run tes).
@@ -1144,7 +1144,7 @@ def test_integration():
             _prepare_database_once()
         finally:
             os.environ["AGENCY_DB_FILE"] = old_db_file
-        print("[TEST 34/42] ADR-0018: cold start melengkapi tabel baru di DB lama tanpa menyentuh data.")
+        print("[TEST 34/43] ADR-0018: cold start melengkapi tabel baru di DB lama tanpa menyentuh data.")
         # 35. Test Validasi Input (ADR-0019): whitelist + normalisasi
         #     clearance, milestone_code wajib, laytime wajib 3 waktu,
         #     JSON rusak -> 400 (bukan koneksi putus / data demo tersimpan).
@@ -1212,7 +1212,7 @@ def test_integration():
         _expect_raw_400("/api/login", b"[1, 2, 3]", "Body JSON harus berupa objek")
         with urllib.request.urlopen(f"{base_url}/api/port-calls") as res:
             assert res.status == 200, "Server harus tetap hidup setelah body rusak"
-        print("[TEST 35/42] ADR-0019: validasi whitelist/normalisasi clearance+milestone, laytime wajib 3 waktu, JSON rusak 400.")
+        print("[TEST 35/43] ADR-0019: validasi whitelist/normalisasi clearance+milestone, laytime wajib 3 waktu, JSON rusak 400.")
 
         # 36. Test Security Headers + /api/health (ADR-0019).
         anon_opener = urllib.request.build_opener()  # tanpa cookie
@@ -1229,7 +1229,7 @@ def test_integration():
             assert res.headers.get("X-Frame-Options") == "DENY"
         with anon_opener.open(f"{base_url}/") as res:
             assert res.headers.get("X-Content-Type-Options") == "nosniff", "Halaman login juga harus membawa security headers"
-        print("[TEST 36/42] ADR-0019: /api/health tanpa auth + security headers di API, UI, dan halaman login.")
+        print("[TEST 36/43] ADR-0019: /api/health tanpa auth + security headers di API, UI, dan halaman login.")
 
         # 37. Status VOID (ADR-0020): baris salah input dibatalkan — tetap
         #     tersimpan sebagai riwayat, gate SPB + daftar tertunda
@@ -1310,7 +1310,7 @@ def test_integration():
             det37 = json.loads(res.read().decode("utf-8"))
         voided = [c for c in det37["clearances"] if c["status"] == "VOID"]
         assert len(voided) == 2, f"Harus ada 2 baris VOID sebagai riwayat, dapat {len(voided)}"
-        print("[TEST 37/42] ADR-0020: VOID membatalkan salah input — gate abaikan baris void bersyarat, wajib tetap blokir, VOID final + OPS/ADMIN.")
+        print("[TEST 37/43] ADR-0020: VOID membatalkan salah input — gate abaikan baris void bersyarat, wajib tetap blokir, VOID final + OPS/ADMIN.")
 
         # 38. Migrasi CHECK VOID (ADR-0020): DB lama yang CHECK status-nya
         #     belum mengenal VOID dinaikkan (rebuild tabel) tanpa menyentuh
@@ -1387,7 +1387,7 @@ def test_integration():
             c2.close()
         finally:
             os.environ["AGENCY_DB_FILE"] = old_db_file
-        print("[TEST 38/42] ADR-0020: migrasi CHECK VOID (cold start + init_db) tanpa mengubah data; VOID bisa disimpan; idempotent.")
+        print("[TEST 38/43] ADR-0020: migrasi CHECK VOID (cold start + init_db) tanpa mengubah data; VOID bisa disimpan; idempotent.")
 
         # 39. Tambah pelabuhan master (ADR-0021): endpoint + validasi.
         # Kode huruf kecil -> dinormalisasi jadi IDBLW; duplikat -> 400;
@@ -1434,7 +1434,7 @@ def test_integration():
         _expect_400("/api/master/ports",
                     {"code": "IDSBY", "name": "Surabaya", "province": "Jawa Timur", "inaportnet_level": "Kelas I", "max_draft": -1},
                     "tidak boleh negatif")
-        print("[TEST 39/42] ADR-0021: tambah pelabuhan master (normalisasi kode+level, duplikat/kode/level/draft ditolak, terminal ikut tampil).")
+        print("[TEST 39/43] ADR-0021: tambah pelabuhan master (normalisasi kode+level, duplikat/kode/level/draft ditolak, terminal ikut tampil).")
 
         # 40. ADR-0022 — tenggat pasca-ATD (laytime 3d, voucher 7d,
         # FDA 30d, sengketa 14d) dihitung dari ATD; badge di detail +
@@ -1543,7 +1543,7 @@ def test_integration():
         with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc42}") as res:
             det42 = json.loads(res.read().decode("utf-8"))
         assert det42["post_atd"] == [], f"tanpa ATD post_atd harus kosong, dapat {det42['post_atd']}"
-        print("[TEST 40/42] ADR-0022: tenggat pasca-ATD (laytime 3d/voucher 7d/FDA 30d/sengketa 14d) + badge detail & papan shift.")
+        print("[TEST 40/43] ADR-0022: tenggat pasca-ATD (laytime 3d/voucher 7d/FDA 30d/sengketa 14d) + badge detail & papan shift.")
 
         # 41. ADR-0024 — milestone GANGWAY_DOWN + COB (SOP Tahap 3-4):
         # wajib catat menit tepat, keduanya TIDAK mengubah status.
@@ -1569,7 +1569,7 @@ def test_integration():
         assert {"GANGWAY_DOWN", "COB"} <= codes43, f"kedua milestone harus tercatat, dapat {codes43}"
         gw = next(m for m in det43["milestones"] if m["milestone_code"] == "GANGWAY_DOWN")
         assert gw["event_time"] == "2026-11-12 10:05"
-        print("[TEST 41/42] ADR-0024: milestone GANGWAY_DOWN + COB tercatat (menit tepat), status tidak berubah.")
+        print("[TEST 41/43] ADR-0024: milestone GANGWAY_DOWN + COB tercatat (menit tepat), status tidak berubah.")
 
         # 42. ADR-0025 — sertifikat kapal: tambah + badge expired/akan
         # expired (<= 30 hari) di detail + papan shift; expiry terbaru
@@ -1630,7 +1630,62 @@ def test_integration():
         assert len(smc) == 1 and smc[0]["status"] == "expiring"
         assert smc[0]["days_left"] in (9, 10)
         assert board["totals"]["cert_alerts"] >= 2
-        print("[TEST 42/42] ADR-0025: sertifikat kapal (SSCEC + statutori) — tambah, badge expired/akan expired di detail & papan shift.")
+        print("[TEST 42/43] ADR-0025: sertifikat kapal (SSCEC + statutori) — tambah, badge expired/akan expired di detail & papan shift.")
+
+        # 43. ADR-0026 — LK3 Masuk + SPKK/RKBM di template clearance:
+        # template kini 14 item; LK3 tenggat ETA+24 jam; SPKK tanpa
+        # tenggat tanggal; gate SPB TIDAK berubah (keduanya PENDING
+        # tidak memblokir SPB).
+        with urllib.request.urlopen(_post("/api/port-calls",
+                {"vessel_imo": "9876543", "port_code": "IDTPP",
+                 "terminal_name": "JICT (Jakarta Int. Container Terminal)",
+                 "cargo_name": "Batu Bara", "cargo_tonnage": 50000,
+                 "eta": "2026-11-12 08:00", "vessel_category": "FOREIGN"})) as res:
+            pc44 = json.loads(res.read().decode("utf-8"))["port_call_id"]
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc44}") as res:
+            det44 = json.loads(res.read().decode("utf-8"))
+        assert len(det44["clearances"]) == 14, f"template harus 14 item, dapat {len(det44['clearances'])}"
+        types44 = [c["doc_type"] for c in det44["clearances"]]
+        assert "LK3 Masuk / Laporan Kedatangan Kapal" in types44
+        assert "SPKK / RKBM (Persetujuan Kegiatan Kapal)" in types44
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc44}/clearance-checklist") as res:
+            chk44 = json.loads(res.read().decode("utf-8"))
+        assert len(chk44["items"]) == 14
+        lk3 = next(i for i in chk44["items"] if i["category"] == "lk3")
+        spkk = next(i for i in chk44["items"] if i["category"] == "spkk")
+        assert lk3["deadline"] == "2026-11-13 08:00", f"LK3 tenggat harus ETA+24 jam, dapat {lk3['deadline']}"
+        assert lk3["status"] == "PENDING"
+        assert spkk["deadline"] is None and spkk["warning"] is None, "SPKK tidak punya tenggat tanggal"
+        assert spkk["status"] == "PENDING"
+        # Gate tidak berubah: SPB bisa terbit walau LK3 + SPKK masih PENDING.
+        for cl in det44["clearances"]:
+            if "SPB" in cl["doc_type"] or "LK3" in cl["doc_type"] or "SPKK" in cl["doc_type"]:
+                continue
+            with urllib.request.urlopen(_post(f"/api/clearances/{cl['id']}/update",
+                    {"doc_number": f"DOC-{cl['id']}-2026", "status": "APPROVED"})) as res:
+                assert res.status == 200
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc44}/spb",
+                {"doc_number": "SPB.T43.001", "issued_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})) as res:
+            assert res.status == 200
+        # LK3 overdue: ETA sudah lewat 24 jam + masih PENDING.
+        with urllib.request.urlopen(_post("/api/port-calls",
+                {"vessel_imo": "9876543", "port_code": "IDTPP",
+                 "terminal_name": "JICT (Jakarta Int. Container Terminal)",
+                 "cargo_name": "Batu Bara", "cargo_tonnage": 50000,
+                 "eta": "2026-10-20 08:00", "vessel_category": "DOMESTIC"})) as res:
+            pc45 = json.loads(res.read().decode("utf-8"))["port_call_id"]
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc45}/clearance-checklist") as res:
+            chk45 = json.loads(res.read().decode("utf-8"))
+        lk3b = next(i for i in chk45["items"] if i["category"] == "lk3")
+        assert lk3b["overdue"], f"LK3 harus overdue (ETA 2026-10-20 + 24 jam sudah lewat), dapat {lk3b}"
+        assert lk3b["deadline"] == "2026-10-21 08:00"
+        # Port call contoh lama (seed) mendapat kedua item via migrasi seed.
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/PC-2026-JKT-0001") as res:
+            det_seed2 = json.loads(res.read().decode("utf-8"))
+        seed_types = {c["doc_type"]: c["status"] for c in det_seed2["clearances"]}
+        assert seed_types.get("LK3 Masuk / Laporan Kedatangan Kapal") == "APPROVED"
+        assert seed_types.get("SPKK / RKBM (Persetujuan Kegiatan Kapal)") == "APPROVED"
+        print("[TEST 43/43] ADR-0026: LK3 Masuk + SPKK/RKBM di template (14 item); LK3 ETA+24 jam, SPKK tanpa tenggat tanggal, gate SPB tidak berubah.")
 
         print("\nSEMUA INTEGRATION TEST LULUS (100% VERIFIED)!")
 

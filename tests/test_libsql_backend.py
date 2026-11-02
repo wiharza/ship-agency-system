@@ -57,8 +57,8 @@ def main():
     _check("row[0] by indeks", isinstance(row[0], int))
     _check("dict(row)", dict(row)["agency"] == "INAPORTNET_SIMPADU")
     _check("row.keys()", "doc_type" in row.keys())
-    _check("seed clearances = 10",
-           conn.execute("SELECT COUNT(*) FROM clearances").fetchone()[0] == 10)
+    _check("seed clearances = 12",
+           conn.execute("SELECT COUNT(*) FROM clearances").fetchone()[0] == 12)
 
     # 2. Foreign key ditegakkan (PRAGMA foreign_keys = ON)
     try:

@@ -60,7 +60,7 @@ python3 server.py 8000 &
 # 1b. Login sebagai OPS (cookie disimpan di cookies-ops.txt)
 curl -s -c cookies-ops.txt -X POST localhost:8000/api/login -H 'Content-Type: application/json' \
   -d '{"username":"ops_jakarta","password":"<password-ops>"}'
-# 2. Buat port call baru (kapal asing; template clearance 12 item dibuat otomatis)
+# 2. Buat port call baru (kapal asing; template clearance 14 item dibuat otomatis)
 curl -s -b cookies-ops.txt -X POST localhost:8000/api/port-calls -H 'Content-Type: application/json' \
   -d '{"vessel_imo":"9431289","port_code":"IDTPP","terminal_name":"JICT (Jakarta Int. Container Terminal)","cargo_name":"Peti Kemas","cargo_tonnage":25000,"eta":"2026-11-10 08:00","vessel_category":"FOREIGN"}'
 # -> {"port_call_id": "PC-2026-TPP-0002", ...}  (nomor urut mengikuti isi DB)
@@ -117,7 +117,7 @@ render 390px tanpa overflow horizontal.
 | `GET /api/me` | User + role dari session saat ini |
 | `GET /api/port-calls` | Daftar port call |
 | `GET /api/port-calls/<id>` | Detail (clearances, milestones, SOF, disbursements, disputes) |
-| `POST /api/port-calls` | Buat port call + template clearance 12 item (ASING: PKKA, DOMESTIK: PKK) |
+| `POST /api/port-calls` | Buat port call + template clearance 14 item (ASING: PKKA, DOMESTIK: PKK) |
 | `GET /api/port-calls/<id>/clearance-checklist` | Checklist in/out + tenggat dari ETA/ETD + `can_issue_spb` + blockers |
 | `GET /api/port-calls/<id>/audit-logs` | Jejak audit port call |
 | `GET /api/port-calls/<id>/handover` | Ringkasan handover shift |
@@ -165,7 +165,7 @@ render 390px tanpa overflow horizontal.
 
 - **PRD** (`docs/spec/prd.md`): §1.1 diperbaiki PM 65/2019 → **PM 59/2021**;
   enum status §4.1/§4.2 diselaraskan dengan kode (`PRE_ARRIVAL…CLOSED`,
-  `PENDING…EXPIRED`); ditambahkan gate SPB, template clearance 12 item,
+  `PENDING…EXPIRED`); ditambahkan gate SPB, template clearance 14 item,
   endpoint baru, dan **§9 Status Implementasi** — tabel sumber kebenaran vs
   kode. Fitur yang belum ada (dashboard, tab timeline, auto-save SOF
   offline, notifikasi email/Telegram, HTTPS/TLS) ditandai **[TARGET]**,
@@ -344,6 +344,7 @@ lokal, tanpa query DB per request).
 - **Matriks selisih FDA (ADR-0023):** kolom "Selisih FDA − PDA" per pos + baris TOTAL di tabel keuangan — FDA melebihi PDA tampil merah, pos FDA belum diisi tampil "Belum diisi" (bukan selisih negatif), total dilengkapi catatan bila belum final.
 - **Milestone GANGWAY_DOWN + COB (ADR-0024):** dua kode milestone baru (13 kode) — gangway down dan cargo documents on board, keduanya wajib catat menit tepat dan tidak mengubah status.
 - **Sertifikat kapal (ADR-0025):** pelacakan SSCEC + sertifikat statutori per kapal — badge merah bila kedaluwarsa, kuning bila sisa ≤ 30 hari, di header detail dan kartu papan shift; tanggal kedaluwarsa di masa lalu boleh dicatat (justru pemicu pengingat).
+- **LK3 Masuk + SPKK/RKBM (ADR-0026):** template clearance kini 14 item — LK3 Masuk (tenggat ETA+24 jam) dan SPKK/RKBM (tanpa tenggat tanggal, dipantau statusnya); gate SPB tidak berubah.
 
 - **Hash berkas:** kolom `file_sha256`/`file_name` hanya terisi bila ada
   berkas yang benar-benar diunggah (fitur upload belum ada); hash yang dulu

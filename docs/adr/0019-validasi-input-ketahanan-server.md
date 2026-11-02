@@ -126,6 +126,29 @@ inline (pekerjaan terpisah, bukan satu baris header).
   nilai rendah (rate limit membatasi otomasi, bukan penyalahgunaan
   pemilik akun sah; codebase stdlib-only, praktis tanpa dependensi).
 
+## Follow-up: drain body sebelum 413 (ditemukan lewat CI)
+
+Setelah ADR-0019 di-push, CI gagal di Tes 26 dengan `BrokenPipeError`
+padahal suite sudah sampai di print TEST 25 — bukan assertion yang
+gagal, melainkan koneksi putus saat client mengunggah body 1,1 MB.
+Penyebab: cabang 413 di `_do_post_impl` menjawab TANPA membaca body.
+Server menutup koneksi dengan body belum terbaca → kernel mengirim RST
+→ client yang masih mengunggah mendapat Broken pipe. Terbukti di probe
+lokal: 15/30 POST body 1,1 MB gagal `URLError`, 0 traceback server
+(persis gejala CI). Perbaikan: `_drain_body()` membuang body (maks 8 MB)
+sebelum menjawab 413; Tes 26 kini mengulang 413 sebanyak 20x (race-nya
+~50%, sekali lolos tidak membuktikan apa-apa). Setelah perbaikan: probe
+30/30 bersih 413, suite 36/36.
+
+Catatan: kegagalan CI pertama (di Tes 13b, SPB setelah approve
+clearance) TIDAK terjelaskan oleh mekanisme ini — body di sana kecil
+dan server sudah membacanya. Kegagalan itu tidak pernah ter-reproduksi
+lokal (5/5 suite + 30/30 pengulangan alur Tes 13b lolos, log server
+bersih) dan tidak ada jejak server-side-nya; kemungkinan besar
+ketidakstabilan transport yang sama di runner CI. Bila Tes 13b gagal
+lagi setelah perbaikan ini, langkah berikutnya adalah diagnostik
+koneksi, bukan menebak lagi.
+
 ## Verifikasi
 
 - Tes API 36/36 (Tes 35–36 baru: validasi whitelist/normalisasi

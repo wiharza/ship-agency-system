@@ -754,13 +754,20 @@ def test_integration():
         _expect_400("/api/port-calls",
                     {"vessel_imo": "9876543", "port_code": "IDTPP",
                      "cargo_tonnage": "rusak"}, "harus angka")
-        # Body > 1 MB -> 413.
-        try:
-            urllib.request.urlopen(_login_req("x" * 1_100_000, "y"))
-            assert False, "Body > 1 MB harus 413"
-        except urllib.error.HTTPError as e:
-            assert e.code == 413, f"Body besar harus 413, dapat {e.code}"
-            assert "terlalu besar" in e.read().decode("utf-8")
+        # Body > 1 MB -> 413, SETIAP kali (bukan kadang Broken pipe).
+        # Dulu server menjawab 413 TANPA membaca body: koneksi ditutup
+        # dengan body belum terbaca -> kernel RST -> client yang masih
+        # mengunggah mendapat URLError (terbukti 15/30 di probe lokal;
+        # Tes 26 gagal dengan cara yang sama di CI). Kini server membuang
+        # body dulu sebelum 413. Diulang 20x karena racenya ~50%: sekali
+        # lolos tidak membuktikan apa-apa, 20x beruntun iya.
+        for _ in range(20):
+            try:
+                urllib.request.urlopen(_login_req("x" * 1_100_000, "y"))
+                assert False, "Body > 1 MB harus 413"
+            except urllib.error.HTTPError as e:
+                assert e.code == 413, f"Body besar harus 413, dapat {e.code}"
+                assert "terlalu besar" in e.read().decode("utf-8")
         # Username mengandung '|' ditolak di create_user (merusak cookie).
         conn = get_db()
         try:

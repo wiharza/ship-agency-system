@@ -29,6 +29,23 @@ PORT = 8000
 # raksasa bisa menghabiskan memori proses.
 MAX_BODY_BYTES = 1_000_000  # 1 MB
 
+# Batas buang body saat menjawab 413 (ADR-0019 follow-up): body yang
+# dibuang seluruhnya bila <= 8 MB; lebih dari itu server berhenti membaca
+# dan menutup koneksi (client yang mengirim > 8 MB sudah menyalahgunakan
+# batas 1 MB — RST untuknya dapat diterima).
+_MAX_DRAIN_BYTES = 8 * 1024 * 1024  # 8 MB
+
+def _drain_body(rfile, nbytes):
+    """Baca dan buang `nbytes` byte dari body request, tanpa menyimpan.
+    Dipakai sebelum menjawab 413 supaya client yang masih mengunggah
+    tidak mendapat Broken pipe (lihat komentar di cabang 413)."""
+    remaining = nbytes
+    while remaining > 0:
+        chunk = rfile.read(min(65536, remaining))
+        if not chunk:
+            break
+        remaining -= len(chunk)
+
 # ---------------------------------------------------------------------------
 # Clearance gate SPB & checklist tenggat (PM 28/2022, PM 8/2022, PMK 158/2017
 # jo PMK 97/2020, UU 6/2011 Ps 18, UU 17/2023 + PP 28/2024).
@@ -807,6 +824,17 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"error": "Content-Length tidak valid"}, status=400)
             return
         if length > MAX_BODY_BYTES:
+            # Drain dulu baru 413 (ADR-0019 follow-up): menjawab 413 TANPA
+            # membaca body membuat server menutup koneksi dengan body yang
+            # belum terbaca — kernel mengirim RST, dan client yang masih
+            # mengunggah mendapat Broken pipe (BUKAN 413). Terbukti di
+            # probe lokal: 15/30 POST body 1,1 MB gagal URLError, 0
+            # traceback server; dan Tes 26 gagal dengan cara yang sama di
+            # CI (suite sampai di print TEST 25 lalu crash). Drain dibatasi
+            # _MAX_DRAIN_BYTES: overshoot wajar (< 8 MB) dapat 413 yang
+            # bersih; body yang jauh lebih besar tetap ditutup begitu saja
+            # (RST) — itu penyalahgunaan, bukan client normal.
+            _drain_body(self.rfile, min(length, _MAX_DRAIN_BYTES))
             self.send_json({"error": f"Body terlalu besar (maks {MAX_BODY_BYTES // 1024} KB)"}, status=413)
             return
         # Body yang bukan JSON valid dulu DITELAN diam-diam (payload = {})

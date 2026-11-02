@@ -196,6 +196,31 @@ def build_clearance_checklist(pc, clearances):
     }
 
 
+# Urutan status port call (ADR-0017): status hanya boleh MAJU. Milestone
+# yang dicatat telat (mis. EOSP setelah kapal DEPARTED) tetap tersimpan
+# sebagai fakta lapangan, tapi TIDAK boleh menarik status ke belakang —
+# dulu EOSP selalu menulis ARRIVED dan ALL_FAST selalu BERTHED tanpa
+# melihat status sekarang.
+_STATUS_RANK = {
+    "PRE_ARRIVAL": 0, "ARRIVED": 1, "BERTHED": 2, "DEPARTED": 3,
+    "CLEARANCE_CLOSED": 4, "CLOSED": 5,
+}
+
+
+def _closed_lock_message(pc):
+    """Pesan penolakan bila port call sudah CLOSED (arsip 10 tahun).
+
+    Menyebut SIAPA menutup dan KAPAN, supaya petugas tahu ke siapa harus
+    bertanya — bukan sekadar "ditolak". Mengembalikan None bila port call
+    belum CLOSED (boleh diubah)."""
+    d = pc if isinstance(pc, dict) else dict(pc)
+    if d.get("finance_closed_at"):
+        return (f"Port call sudah CLOSED oleh {d.get('finance_closed_by') or '?'} "
+                f"pada {d['finance_closed_at']} — perubahan tidak diizinkan "
+                f"(arsip 10 tahun terkunci)")
+    return None
+
+
 def _insert_disbursement(conn, pc_id, payload):
     category = payload.get("category")
     item_name = (payload.get("item_name") or "").strip()
@@ -487,6 +512,10 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 ORDER BY d.id DESC
                 """, (pc_id,))
                 res["disputes"] = [dict(r) for r in c.fetchall()]
+
+                # Riwayat SPB yang sudah digantikan (ADR-0017)
+                c.execute("SELECT * FROM spb_history WHERE port_call_id = ? ORDER BY id DESC", (pc_id,))
+                res["spb_history"] = [dict(r) for r in c.fetchall()]
 
                 conn.close()
                 self.send_json(res)
@@ -839,6 +868,111 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"status": "success", "port_call_id": pc_id, "message": f"Port Call {pc_id} berhasil dibuat"})
             return
 
+        if path.startswith("/api/milestones/"):
+            parts = path.strip("/").split("/")
+            # POST /api/milestones/<id> — koreksi waktu/catatan milestone
+            # yang sudah ada (ADR-0017). Beda dengan mencatat milestone
+            # baru: koreksi TIDAK PERNAH mengubah status kapal (status
+            # hanya maju lewat milestone baru). Waktu baru harus tetap
+            # di antara milestone sebelum dan sesudahnya, supaya urutan
+            # SOF tidak rusak dari arah lain.
+            if len(parts) >= 3:
+                milestone_id = parts[2]
+                conn = get_db()
+                c = conn.cursor()
+                c.execute("SELECT * FROM milestones WHERE id = ?", (milestone_id,))
+                ms = c.fetchone()
+                if not ms:
+                    conn.close()
+                    self.send_json({"error": "Milestone tidak ditemukan"}, status=404)
+                    return
+                c.execute("SELECT finance_closed_at, finance_closed_by FROM port_calls WHERE id = ?", (ms["port_call_id"],))
+                _pc = c.fetchone()
+                lock_msg = _closed_lock_message(_pc) if _pc else None
+                if lock_msg:
+                    conn.close()
+                    self.send_json({"error": lock_msg}, status=400)
+                    return
+                new_time = payload.get("event_time")
+                new_remarks = payload.get("remarks")
+                if new_time is not None:
+                    try:
+                        parse_iso(new_time)
+                    except Exception as exc:
+                        conn.close()
+                        self.send_json({"error": f"Waktu milestone tidak valid: {exc}. Pakai format YYYY-MM-DD HH:MM."}, status=400)
+                        return
+                    c.execute("SELECT MAX(event_time) FROM milestones WHERE port_call_id = ? AND event_time < ? AND id != ?",
+                              (ms["port_call_id"], ms["event_time"], milestone_id))
+                    prev_time = c.fetchone()[0]
+                    c.execute("SELECT MIN(event_time) FROM milestones WHERE port_call_id = ? AND event_time > ? AND id != ?",
+                              (ms["port_call_id"], ms["event_time"], milestone_id))
+                    next_time = c.fetchone()[0]
+                    if prev_time and new_time < prev_time:
+                        conn.close()
+                        self.send_json({"error": f"Waktu baru ({new_time}) lebih awal dari milestone sebelumnya ({prev_time}) — urutan SOF harus kronologis"}, status=400)
+                        return
+                    if next_time and new_time > next_time:
+                        conn.close()
+                        self.send_json({"error": f"Waktu baru ({new_time}) lebih lambat dari milestone berikutnya ({next_time}) — urutan SOF harus kronologis"}, status=400)
+                        return
+                if new_time is None and new_remarks is None:
+                    conn.close()
+                    self.send_json({"error": "Tidak ada perubahan (isi event_time atau remarks)"}, status=400)
+                    return
+                with conn:
+                    conn.execute("""
+                    UPDATE milestones SET event_time = ?, remarks = ? WHERE id = ?
+                    """, (new_time if new_time is not None else ms["event_time"],
+                          new_remarks if new_remarks is not None else ms["remarks"],
+                          milestone_id))
+                    log_audit(conn, ms["port_call_id"], actor, "MILESTONE_UPDATE",
+                              f"{ms['milestone_code']} @ {ms['event_time']} — {ms['remarks'] or ''}",
+                              f"{ms['milestone_code']} @ {new_time or ms['event_time']} — {new_remarks if new_remarks is not None else (ms['remarks'] or '')} (koreksi waktu; status kapal tidak berubah)")
+                conn.close()
+                self.send_json({"status": "success", "message": "Milestone berhasil dikoreksi (status kapal tidak berubah)"})
+                return
+
+        if path.startswith("/api/disputes/"):
+            parts = path.strip("/").split("/")
+            # POST /api/disputes/<id>/resolve — mencatat resolusi sengketa
+            # FDA (ADR-0017). SATU-SATUNYA pengecualian kunci CLOSED:
+            # finance boleh menyelesaikan sengketa yang sudah terbuka
+            # meski port call sudah CLOSED, karena sengketa bisa berlanjut
+            # setelah arsip ditutup (Q32: deadline respon & negosiasi).
+            if len(parts) == 4 and parts[3] == "resolve":
+                dispute_id = parts[2]
+                if actor_role not in ("FINANCE", "ADMIN"):
+                    self.send_json({"error": "Resolusi sengketa hanya boleh dilakukan role FINANCE atau ADMIN"}, status=403)
+                    return
+                new_status = payload.get("status")
+                resolution_notes = (payload.get("resolution_notes") or "").strip()
+                if new_status not in ("UNDER_REVIEW", "ACCEPTED_REVISED", "REJECTED_FINAL"):
+                    self.send_json({"error": "status resolusi wajib salah satu dari: UNDER_REVIEW, ACCEPTED_REVISED, REJECTED_FINAL"}, status=400)
+                    return
+                conn = get_db()
+                c = conn.cursor()
+                c.execute("SELECT * FROM fda_disputes WHERE id = ?", (dispute_id,))
+                dp = c.fetchone()
+                if not dp:
+                    conn.close()
+                    self.send_json({"error": "Sengketa tidak ditemukan"}, status=404)
+                    return
+                if dp["status"] in ("ACCEPTED_REVISED", "REJECTED_FINAL"):
+                    conn.close()
+                    self.send_json({"error": f"Sengketa sudah diselesaikan ({dp['status']}) — tidak bisa diubah lagi"}, status=400)
+                    return
+                with conn:
+                    conn.execute("""
+                    UPDATE fda_disputes SET status = ?, resolution_notes = ? WHERE id = ?
+                    """, (new_status, resolution_notes or dp["resolution_notes"], dispute_id))
+                    log_audit(conn, dp["port_call_id"], actor, "DISPUTE_RESOLVE",
+                              f"Sengketa #{dispute_id} [{dp['status']}]",
+                              f"Sengketa #{dispute_id} [{new_status}] — {resolution_notes or ''}")
+                conn.close()
+                self.send_json({"status": "success", "message": f"Sengketa #{dispute_id} dicatat sebagai {new_status}"})
+                return
+
         if path.startswith("/api/clearances/"):
             parts = path.strip("/").split("/")
             # POST /api/clearances/<id>/update
@@ -855,6 +989,14 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 if not cl:
                     conn.close()
                     self.send_json({"error": "Dokumen clearance tidak ditemukan"}, status=404)
+                    return
+                # Kunci CLOSED (ADR-0017).
+                c.execute("SELECT finance_closed_at, finance_closed_by FROM port_calls WHERE id = ?", (cl["port_call_id"],))
+                _pc = c.fetchone()
+                lock_msg = _closed_lock_message(_pc) if _pc else None
+                if lock_msg:
+                    conn.close()
+                    self.send_json({"error": lock_msg}, status=400)
                     return
 
                 new_doc_number = doc_number.strip() if doc_number is not None else cl["doc_number"]
@@ -902,11 +1044,28 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
 
                 conn = get_db()
                 c = conn.cursor()
-                c.execute("SELECT id, status, spb_issued_at, spb_expiry_at FROM port_calls WHERE id = ?", (pc_id,))
+                c.execute("SELECT id, status, spb_issued_at, spb_expiry_at, finance_closed_at, finance_closed_by FROM port_calls WHERE id = ?", (pc_id,))
                 pc = c.fetchone()
                 if not pc:
                     conn.close()
                     self.send_json({"error": "Port Call tidak ditemukan"}, status=404)
+                    return
+                # Kunci CLOSED (ADR-0017): arsip yang sudah CLOSED tidak
+                # boleh diubah lagi — sebelumnya milestone masih bisa masuk
+                # dan "arsip 10 tahun terkunci" baru label di layar.
+                lock_msg = _closed_lock_message(pc)
+                if lock_msg:
+                    conn.close()
+                    self.send_json({"error": lock_msg}, status=400)
+                    return
+                # Validasi waktu (ADR-0017): dulu event_time apa pun
+                # diterima mentah-mentah dan merusak urutan SOF; kini
+                # format salah ditolak 400 yang menyebut format benar.
+                try:
+                    parse_iso(event_time)
+                except Exception as exc:
+                    conn.close()
+                    self.send_json({"error": f"Waktu milestone tidak valid: {exc}. Pakai format YYYY-MM-DD HH:MM."}, status=400)
                     return
                 # GATE berangkat (PM 28/2022): CAST_OFF/SAILED hanya boleh
                 # mengubah status jadi DEPARTED bila SPB sudah terbit dan
@@ -919,6 +1078,10 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                         spb_blocker = "SPB belum terbit — kapal belum boleh berlayar (PM 28/2022)"
                     elif pc["spb_expiry_at"] and datetime.now() > parse_iso(pc["spb_expiry_at"]):
                         spb_blocker = f"SPB sudah kedaluwarsa {pc['spb_expiry_at']} — terbitkan SPB baru sebelum berlayar"
+                # Waktu milestone terakhir — untuk memberi tahu bila entri
+                # baru dicatat di luar urutan kronologis (koreksi telat).
+                c.execute("SELECT MAX(event_time) FROM milestones WHERE port_call_id = ?", (pc_id,))
+                latest_time = c.fetchone()[0]
                 with conn:
                     conn.execute("""
                     INSERT INTO milestones (port_call_id, milestone_code, event_time, recorded_by, remarks)
@@ -928,7 +1091,11 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                               None, f"{code} @ {event_time} — {remarks}"
                               + (f" [DITOLAK jadi DEPARTED: {spb_blocker}]" if spb_blocker else ""))
 
-                    # Update status port call jika milestone kunci
+                    # Update status port call jika milestone kunci — TAPI
+                    # hanya MAJU (ADR-0017). Dulu EOSP selalu menulis
+                    # ARRIVED dan ALL_FAST selalu BERTHED, sehingga kapal
+                    # yang sudah DEPARTED bisa kembali ke ARRIVED hanya
+                    # karena seseorang mencatat EOSP yang telat.
                     new_status = None
                     if code in ("EOSP", "ANCHORED"):
                         new_status = "ARRIVED"
@@ -937,7 +1104,9 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     elif code in ("CAST_OFF", "SAILED") and not spb_blocker:
                         new_status = "DEPARTED"
 
-                    if new_status:
+                    status_moved = False
+                    if new_status and _STATUS_RANK[new_status] > _STATUS_RANK[pc["status"]]:
+                        status_moved = True
                         if new_status == "DEPARTED":
                             # atd selama ini tidak pernah diisi; isi dari
                             # event_time milestone keberangkatan.
@@ -950,7 +1119,22 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     self.send_json({"error": spb_blocker, "milestone_recorded": True,
                                     "status": pc["status"]}, status=400)
                     return
-                self.send_json({"status": "success", "message": f"Milestone {code} dicatat"})
+                # Catatan untuk UI bila milestone tercatat tapi status tidak
+                # bergerak, atau waktunya lebih awal dari milestone
+                # terakhir (koreksi telat — dicatat sebagai fakta, status
+                # tetap). Tanpa catatan ini petugas tidak tahu mengapa
+                # status "tidak berubah" setelah ia menyimpan.
+                note = None
+                if new_status and not status_moved:
+                    note = (f"Milestone dicatat, tetapi status tetap {pc['status']} — "
+                            f"status hanya maju ({new_status} tidak menarik status ke belakang).")
+                if latest_time and event_time < latest_time:
+                    oo = (f"Waktu milestone ({event_time}) lebih awal dari milestone "
+                          f"terakhir ({latest_time}) — dicatat sebagai koreksi; "
+                          f"urutan SOF di layar tetap diurutkan berdasarkan waktu.")
+                    note = f"{note} {oo}" if note else oo
+                self.send_json({"status": "success", "message": f"Milestone {code} dicatat",
+                                "note": note})
                 return
 
             # POST /api/port-calls/<id>/stoppage
@@ -958,10 +1142,16 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 pc_id = parts[2]
                 conn = get_db()
                 c = conn.cursor()
-                c.execute("SELECT id FROM port_calls WHERE id = ?", (pc_id,))
-                if not c.fetchone():
+                c.execute("SELECT id, finance_closed_at, finance_closed_by FROM port_calls WHERE id = ?", (pc_id,))
+                _pc = c.fetchone()
+                if not _pc:
                     conn.close()
                     self.send_json({"error": "Port Call tidak ditemukan"}, status=404)
+                    return
+                lock_msg = _closed_lock_message(_pc)
+                if lock_msg:
+                    conn.close()
+                    self.send_json({"error": lock_msg}, status=400)
                     return
                 # Validasi SEBELUM insert (ADR-0015): sebelumnya nilai
                 # rusak langsung melempar ke 500/koneksi putus — float()
@@ -991,6 +1181,13 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                         conn.close()
                         self.send_json({"error": f"Waktu {_field} tidak valid: {exc}. Pakai format YYYY-MM-DD HH:MM."}, status=400)
                         return
+                # Selesai harus sesudah mulai (ADR-0017): dulu jeda dengan
+                # end_time sebelum start_time lolos dan menghasilkan durasi
+                # negatif di hitung laytime.
+                if parse_iso(payload.get("end_time")) <= parse_iso(payload.get("start_time")):
+                    conn.close()
+                    self.send_json({"error": "Waktu selesai jeda harus sesudah waktu mulai"}, status=400)
+                    return
                 with conn:
                     conn.execute("""
                     INSERT INTO sof_stoppages (port_call_id, start_time, end_time, category, percentage_counted, remarks)
@@ -1012,6 +1209,12 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             # persetujuan karantina kesehatan Syahbandar dilarang terbitkan SPB).
             if len(parts) == 4 and parts[3] == "spb":
                 pc_id = parts[2]
+                # Gate role (ADR-0017): terbit SPB dibatasi OPS/ADMIN, sama
+                # seperti sign-off ops — dulu siapa pun yang login (termasuk
+                # FINANCE) bisa menerbitkan SPB.
+                if actor_role not in ("OPS", "ADMIN"):
+                    self.send_json({"error": "Terbit SPB hanya boleh dilakukan role OPS atau ADMIN"}, status=403)
+                    return
                 issue_time_str = payload.get("issued_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
                 doc_number = payload.get("doc_number", "SPB-ONLINE-001")
                 try:
@@ -1025,10 +1228,29 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
 
                 conn = get_db()
                 c = conn.cursor()
-                c.execute("SELECT id FROM port_calls WHERE id = ?", (pc_id,))
-                if not c.fetchone():
+                c.execute("SELECT id, spb_issued_at, spb_expiry_at, finance_closed_at, finance_closed_by FROM port_calls WHERE id = ?", (pc_id,))
+                pc = c.fetchone()
+                if not pc:
                     conn.close()
                     self.send_json({"error": "Port Call tidak ditemukan"}, status=404)
+                    return
+                lock_msg = _closed_lock_message(pc)
+                if lock_msg:
+                    conn.close()
+                    self.send_json({"error": lock_msg}, status=400)
+                    return
+                c.execute("SELECT doc_number FROM clearances WHERE port_call_id = ? AND doc_type LIKE '%SPB%'", (pc_id,))
+                _spb_row = c.fetchone()
+                old_doc_number = _spb_row["doc_number"] if _spb_row else None
+                # SPB kedua menimpa yang pertama (ADR-0017): dulu endpoint
+                # ini langsung menimpa spb_issued_at/expiry dan nomor di
+                # baris clearance — nomor lama hanya tersisa di audit. Kini
+                # SPB yang masih berlaku DITOLAK diterbitkan ulang; bila
+                # sudah kedaluwarsa, penerbitan ulang sah (PM 28/2022) dan
+                # nomor lama dicatat ke spb_history sebelum ditimpa.
+                if pc["spb_issued_at"] and pc["spb_expiry_at"] and datetime.now() <= parse_iso(pc["spb_expiry_at"]):
+                    conn.close()
+                    self.send_json({"error": f"SPB {old_doc_number or ''} masih berlaku hingga {pc['spb_expiry_at']} — terbitkan ulang hanya setelah kedaluwarsa (PM 28/2022 Ps 9)"}, status=400)
                     return
                 c.execute("SELECT * FROM clearances WHERE port_call_id = ?", (pc_id,))
                 blockers, can_issue = clearance_spb_gate([dict(r) for r in c.fetchall()])
@@ -1040,6 +1262,13 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     }, status=400)
                     return
                 with conn:
+                    if pc["spb_issued_at"]:
+                        # SPB lama kedaluwarsa — simpan jejaknya dulu.
+                        conn.execute("""
+                        INSERT INTO spb_history (port_call_id, doc_number, issued_at, expiry_at, superseded_at, superseded_by)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """, (pc_id, old_doc_number, pc["spb_issued_at"], pc["spb_expiry_at"],
+                              datetime.now().strftime("%Y-%m-%d %H:%M:%S"), actor))
                     conn.execute("""
                     UPDATE port_calls
                     SET spb_issued_at = ?, spb_expiry_at = ?, updated_at = ?
@@ -1052,7 +1281,8 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     WHERE port_call_id = ? AND doc_type LIKE '%SPB%'
                     """, (doc_number, issue_time_str, expiry_time_str, pc_id))
                     log_audit(conn, pc_id, actor, "SPB_ISSUED",
-                              None, f"SPB {doc_number} terbit {issue_time_str}, kedaluwarsa {expiry_time_str}")
+                              f"SPB {old_doc_number} terbit {pc['spb_issued_at']}, kedaluwarsa {pc['spb_expiry_at']}" if pc["spb_issued_at"] else None,
+                              f"SPB {doc_number} terbit {issue_time_str}, kedaluwarsa {expiry_time_str}")
                 conn.close()
                 self.send_json({
                     "status": "success",
@@ -1079,6 +1309,18 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 file_sha256 = None
 
                 conn = get_db()
+                c = conn.cursor()
+                c.execute("SELECT id, finance_closed_at, finance_closed_by FROM port_calls WHERE id = ?", (pc_id,))
+                _pc = c.fetchone()
+                if not _pc:
+                    conn.close()
+                    self.send_json({"error": "Port Call tidak ditemukan"}, status=404)
+                    return
+                lock_msg = _closed_lock_message(_pc)
+                if lock_msg:
+                    conn.close()
+                    self.send_json({"error": lock_msg}, status=400)
+                    return
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 approval_time = now_str if status == "APPROVED" else None
                 with conn:
@@ -1097,10 +1339,16 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 pc_id = parts[2]
                 conn = get_db()
                 c = conn.cursor()
-                c.execute("SELECT id FROM port_calls WHERE id = ?", (pc_id,))
-                if not c.fetchone():
+                c.execute("SELECT id, finance_closed_at, finance_closed_by FROM port_calls WHERE id = ?", (pc_id,))
+                _pc = c.fetchone()
+                if not _pc:
                     conn.close()
                     self.send_json({"error": "Port Call tidak ditemukan"}, status=404)
+                    return
+                lock_msg = _closed_lock_message(_pc)
+                if lock_msg:
+                    conn.close()
+                    self.send_json({"error": lock_msg}, status=400)
                     return
                 with conn:
                     dis_id, err = _insert_disbursement(conn, pc_id, payload)
@@ -1243,11 +1491,17 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 conn = get_db()
                 c = conn.cursor()
-                c.execute("SELECT ops_closed_at FROM port_calls WHERE id = ?", (pc_id,))
+                c.execute("SELECT ops_closed_at, finance_closed_at, finance_closed_by FROM port_calls WHERE id = ?", (pc_id,))
                 row = c.fetchone()
                 if not row or not row["ops_closed_at"]:
                     conn.close()
                     self.send_json({"error": "Otorisasi 1 (Operasional) wajib diselesaikan terlebih dahulu!"}, status=400)
+                    return
+                # Menutup dua kali (ADR-0017): dulu close-finance kedua
+                # lolos diam-diam dan menimpa finance_closed_by/at.
+                if row["finance_closed_at"]:
+                    conn.close()
+                    self.send_json({"error": f"Port call sudah CLOSED oleh {row['finance_closed_by']} pada {row['finance_closed_at']} — Otorisasi 2 tidak bisa diulang"}, status=400)
                     return
 
                 with conn:
@@ -1278,10 +1532,16 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
 
                 conn = get_db()
                 c = conn.cursor()
-                c.execute("SELECT id FROM port_calls WHERE id = ?", (pc_id,))
-                if not c.fetchone():
+                c.execute("SELECT id, finance_closed_at, finance_closed_by FROM port_calls WHERE id = ?", (pc_id,))
+                _pc = c.fetchone()
+                if not _pc:
                     conn.close()
                     self.send_json({"error": "Port Call tidak ditemukan"}, status=404)
+                    return
+                lock_msg = _closed_lock_message(_pc)
+                if lock_msg:
+                    conn.close()
+                    self.send_json({"error": lock_msg}, status=400)
                     return
                 # Item biaya HARUS milik port call ini (ADR-0015):
                 # sebelumnya sengketa atas item port call lain diterima

@@ -152,16 +152,18 @@ def test_integration():
             assert res.status == 200
         print("[TEST 4/8] POST Milestone EOSP Berhasil.")
 
-        # 5. Test POST SPB (Surat Persetujuan Berlayar - 24h timer)
+        # 5. Test POST SPB (Surat Persetujuan Berlayar - 24h timer).
+        # Tanggal sengaja sudah kedaluwarsa saat Tes 7 menerbitkan ulang
+        # (ADR-0017: terbit ulang hanya sah bila SPB lama kedaluwarsa).
         req_spb = urllib.request.Request(
             f"{base_url}/api/port-calls/{pc_id}/spb",
-            data=json.dumps({"doc_number": "SPB.IDTPP.2026.001", "issued_at": "2026-11-05 10:00:00"}).encode("utf-8"),
+            data=json.dumps({"doc_number": "SPB.IDTPP.2026.001", "issued_at": "2026-10-29 10:00:00"}).encode("utf-8"),
             headers={"Content-Type": "application/json"}
         )
         with urllib.request.urlopen(req_spb) as res:
             assert res.status == 200
             spb_res = json.loads(res.read().decode("utf-8"))
-            assert spb_res["spb_expiry_at"] == "2026-11-06 10:00:00"
+            assert spb_res["spb_expiry_at"] == "2026-10-30 10:00:00"
         print(f"[TEST 5/8] POST SPB Valid (Expiry tepat 24 jam: {spb_res['spb_expiry_at']}).")
 
         # 6. Test POST Laytime Calculation
@@ -240,6 +242,16 @@ def test_integration():
             ho = json.loads(res.read().decode("utf-8"))
             assert "RINGKASAN HANDOVER SHIFT" in ho["handover_text"]
         print("[TEST 8/8] GET Dynamic Handover Shift Berhasil.")
+
+        # Tes 7 menutup JKT-0001 sampai CLOSED — kunci CLOSED (ADR-0017)
+        # akan menolak semua tulis berikutnya ke port call itu. Buka lagi
+        # lewat DB (setup tes, bukan endpoint — tidak ada "buka kunci" di
+        # API) supaya Tes 11/12/23 yang memakai port call contoh tetap
+        # bisa menulis; kuncinya sendiri diuji penuh di Tes 28 (pc2).
+        conn = get_db()
+        with conn:
+            conn.execute("UPDATE port_calls SET ops_closed_by = NULL, ops_closed_at = NULL, finance_closed_by = NULL, finance_closed_at = NULL, status = 'DEPARTED' WHERE id = 'PC-2026-JKT-0001'")
+        conn.close()
 
         # 9. Test Master Ports & Pre-determined List (Typo Prevention)
         with urllib.request.urlopen(f"{base_url}/api/master/ports") as res:
@@ -453,11 +465,22 @@ def test_integration():
 
         # 16b. Terbitkan ulang SPB dengan issued_at = sekarang (agar tidak
         # kedaluwarsa bila tes dijalankan sesudah 2026-11-11), lalu SAILED
-        # -> status DEPARTED dan atd terisi dari event_time.
+        # -> status DEPARTED dan atd terisi dari event_time. SPB dari Tes
+        # 13b (SPB.TEST.001, terbit 2026-11-10) masih berlaku sampai
+        # 2026-11-11 — terbit ulang hanya sah bila SPB lama kedaluwarsa
+        # (ADR-0017), jadi buat kedaluwarsa dulu lewat DB (setup tes).
         now2 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn = get_db()
+        with conn:
+            conn.execute("UPDATE port_calls SET spb_expiry_at = '2026-01-01 00:00:00' WHERE id = ?", (new_pc,))
+        conn.close()
         with urllib.request.urlopen(_post(f"/api/port-calls/{new_pc}/spb",
                 {"doc_number": "SPB.TEST.002", "issued_at": now2})) as res:
             assert res.status == 200
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{new_pc}") as res:
+            det = json.loads(res.read().decode("utf-8"))
+            assert any(h["doc_number"] == "SPB.TEST.001" for h in det.get("spb_history", [])), \
+                "SPB lama (SPB.TEST.001) harus tercatat di spb_history setelah diterbitkan ulang"
         with urllib.request.urlopen(_post(f"/api/port-calls/{new_pc}/milestone",
                 {"milestone_code": "SAILED", "event_time": now2, "remarks": "Berangkat"})) as res:
             assert res.status == 200
@@ -748,6 +771,148 @@ def test_integration():
         finally:
             conn.close()
         print("[TEST 26/26] ADR-0016: rate-limit per IP, body 413, cargo_tonnage 400, username '|' ditolak.")
+
+        # 27. SPB terbit-ulang & histori (ADR-0017): SPB yang masih
+        # berlaku ditolak diterbitkan ulang; bila sudah kedaluwarsa,
+        # terbit ulang sah dan nomor lama masuk spb_history. Terbit SPB
+        # juga dibatasi role OPS/ADMIN.
+        with urllib.request.urlopen(_post("/api/port-calls",
+                {"vessel_imo": "9876543", "port_code": "IDTPP",
+                 "terminal_name": "JICT (Jakarta Int. Container Terminal)",
+                 "cargo_name": "Batu Bara", "cargo_tonnage": 50000,
+                 "eta": "2026-11-12 08:00", "vessel_category": "FOREIGN"})) as res:
+            assert res.status == 200
+            pc27 = json.loads(res.read().decode("utf-8"))["port_call_id"]
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc27}") as res:
+            det27 = json.loads(res.read().decode("utf-8"))
+        for cl in det27["clearances"]:
+            if "SPB" in cl["doc_type"]:
+                continue
+            with urllib.request.urlopen(_post(f"/api/clearances/{cl['id']}/update",
+                    {"doc_number": f"DOC-{cl['id']}-2026", "status": "APPROVED"})) as res:
+                assert res.status == 200
+        # FINANCE tidak boleh menerbitkan SPB.
+        _expect_status(fin_opener, f"/api/port-calls/{pc27}/spb",
+                       {"doc_number": "SPB.FIN.001", "issued_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+                       403, "OPS atau ADMIN")
+        # Terbitkan SPB yang sudah kedaluwarsa (terbit 25 jam lalu).
+        old_issue = (datetime.now() - timedelta(hours=25)).strftime("%Y-%m-%d %H:%M:%S")
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc27}/spb",
+                {"doc_number": "SPB.LAMA.001", "issued_at": old_issue})) as res:
+            assert res.status == 200
+        # Terbitkan ulang: sah, nomor lama masuk histori.
+        now27 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc27}/spb",
+                {"doc_number": "SPB.BARU.001", "issued_at": now27})) as res:
+            assert res.status == 200
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc27}") as res:
+            det27 = json.loads(res.read().decode("utf-8"))
+            assert len(det27["spb_history"]) == 1
+            assert det27["spb_history"][0]["doc_number"] == "SPB.LAMA.001"
+            assert det27["spb_history"][0]["issued_at"] == old_issue
+        # Terbitkan ulang lagi selagi masih berlaku -> 400.
+        _expect_400(f"/api/port-calls/{pc27}/spb",
+                    {"doc_number": "SPB.KETIGA.001", "issued_at": now27}, "masih berlaku")
+        print("[TEST 27/27] ADR-0017: SPB terbit-ulang ditolak bila masih berlaku, histori nomor lama tersimpan, role OPS/ADMIN.")
+
+        # 28. Status hanya maju + kunci CLOSED (ADR-0017).
+        # new_pc sudah CLEARANCE_CLOSED (Tes 16c): EOSP telat tercatat
+        # tapi status tetap CLEARANCE_CLOSED, dengan catatan di respons.
+        with urllib.request.urlopen(_post(f"/api/port-calls/{new_pc}/milestone",
+                {"milestone_code": "EOSP", "event_time": "2026-11-12 08:00", "remarks": "EOSP telat dicatat"})) as res:
+            assert res.status == 200
+            ms28 = json.loads(res.read().decode("utf-8"))
+            assert ms28.get("note") and "tetap CLEARANCE_CLOSED" in ms28["note"]
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{new_pc}") as res:
+            assert json.loads(res.read().decode("utf-8"))["status"] == "CLEARANCE_CLOSED"
+        # Milestone waktu rusak -> 400.
+        _expect_400(f"/api/port-calls/{pc3}/milestone",
+                    {"milestone_code": "EOSP", "event_time": "12-11-2026 08:00"}, "tidak valid")
+        # Stoppage selesai sebelum mulai -> 400.
+        _expect_400(f"/api/port-calls/{pc3}/stoppage",
+                    {"category": "RAIN", "start_time": "2026-11-12 12:00", "end_time": "2026-11-12 10:00",
+                     "percentage_counted": 0, "remarks": "tes"}, "sesudah waktu mulai")
+        # Tutup pc2 sampai CLOSED. Sengketa dibuat dulu lalu dibawa ke
+        # UNDER_REVIEW sebelum close-finance, supaya pengecualian
+        # resolusi sengketa setelah CLOSED bisa diuji (sengketa OPEN
+        # akan menghalangi close-finance — lihat Tes 31).
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc2}/disbursements",
+                {"category": "HUSBANDRY", "item_name": "Air Tawar", "pda_estimate": 1000000, "fda_actual": 0})) as res:
+            assert res.status == 200
+            dis28 = json.loads(res.read().decode("utf-8"))["disbursement_id"]
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc2}/dispute",
+                {"disbursement_id": dis28, "disputed_amount": 500000, "reason": "tarif air melebihi PDA"})) as res:
+            assert res.status == 200
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc2}") as res:
+            det28 = json.loads(res.read().decode("utf-8"))
+            dp28 = det28["disputes"][0]["id"]
+        with fin_opener.open(_post(f"/api/disputes/{dp28}/resolve",
+                {"status": "UNDER_REVIEW", "resolution_notes": "Ditinjau finance"})) as res:
+            assert res.status == 200
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc2}/spb",
+                {"doc_number": "SPB.PC2.001", "issued_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})) as res:
+            assert res.status == 200
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc2}/milestone",
+                {"milestone_code": "SAILED", "event_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "remarks": "Berangkat"})) as res:
+            assert res.status == 200
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc2}/close-ops", {"user": "Capt. Hadi"})) as res:
+            assert res.status == 200
+        with fin_opener.open(_post(f"/api/port-calls/{pc2}/close-finance", {"user": "Finance Mgr"})) as res:
+            assert res.status == 200
+        # Setelah CLOSED: milestone, clearance, biaya, SPB, sengketa baru,
+        # dan close-finance kedua ditolak dengan kalimat yang menyebut
+        # siapa menutup dan kapan.
+        _expect_400(f"/api/port-calls/{pc2}/milestone",
+                    {"milestone_code": "EOSP", "event_time": "2026-11-12 08:00"}, "sudah CLOSED oleh fin_tes")
+        _expect_400(f"/api/port-calls/{pc2}/clearance",
+                    {"agency": "BEA_CUKAI", "doc_type": "Dokumen Telat", "doc_number": "X", "status": "APPROVED"}, "sudah CLOSED")
+        _expect_400(f"/api/port-calls/{pc2}/disbursements",
+                    {"category": "HUSBANDRY", "item_name": "Telat", "pda_estimate": 1}, "sudah CLOSED")
+        _expect_400(f"/api/port-calls/{pc2}/spb",
+                    {"doc_number": "SPB.TELAT.001", "issued_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}, "sudah CLOSED")
+        _expect_400(f"/api/port-calls/{pc2}/dispute",
+                    {"disbursement_id": dis28, "disputed_amount": 100, "reason": "telat"}, "sudah CLOSED")
+        _expect_status(fin_opener, f"/api/port-calls/{pc2}/close-finance",
+                       {"user": "Finance Mgr"}, 400, "sudah CLOSED")
+        # Pengecualian: finance BOLEH menyelesaikan sengketa yang sudah
+        # terbuka (di sini UNDER_REVIEW) meski port call sudah CLOSED;
+        # OPS tidak boleh. (ops2 = opener OPS yang login ulang di Tes 22;
+        # ops_opener sudah logout di Tes 21.)
+        _expect_status(ops2, f"/api/disputes/{dp28}/resolve",
+                       {"status": "ACCEPTED_REVISED", "resolution_notes": "tes"}, 403, "FINANCE atau ADMIN")
+        with fin_opener.open(_post(f"/api/disputes/{dp28}/resolve",
+                {"status": "ACCEPTED_REVISED", "resolution_notes": "Disetujui setengah tarif"})) as res:
+            assert res.status == 200
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc2}") as res:
+            det28 = json.loads(res.read().decode("utf-8"))
+            assert det28["disputes"][0]["status"] == "ACCEPTED_REVISED"
+        print("[TEST 28/28] ADR-0017: status hanya maju, kunci CLOSED menyebut penutup, resolusi sengketa tetap boleh.")
+
+        # 29. Koreksi milestone (ADR-0017): ubah waktu milestone yang
+        # sudah ada tanpa mengubah status; waktu baru harus tetap di
+        # antara tetangganya supaya urutan SOF tidak rusak.
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc3}/milestone",
+                {"milestone_code": "EOSP", "event_time": "2026-11-12 08:00", "remarks": "tiba"})) as res:
+            assert res.status == 200
+        with urllib.request.urlopen(_post(f"/api/port-calls/{pc3}/milestone",
+                {"milestone_code": "ALL_FAST", "event_time": "2026-11-12 10:00", "remarks": "sandar"})) as res:
+            assert res.status == 200
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc3}") as res:
+            det29 = json.loads(res.read().decode("utf-8"))
+            assert det29["status"] == "BERTHED"
+            ms29 = next(m for m in det29["milestones"] if m["milestone_code"] == "ALL_FAST")
+        # Koreksi 10:00 -> 09:00: lolos, status tetap BERTHED.
+        with urllib.request.urlopen(_post(f"/api/milestones/{ms29['id']}",
+                {"event_time": "2026-11-12 09:00", "remarks": "sandar (koreksi)"})) as res:
+            assert res.status == 200
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc3}") as res:
+            det29 = json.loads(res.read().decode("utf-8"))
+            assert det29["status"] == "BERTHED"
+            assert next(m for m in det29["milestones"] if m["id"] == ms29["id"])["event_time"] == "2026-11-12 09:00"
+        # Koreksi ke sebelum EOSP (08:00) -> 400; format rusak -> 400.
+        _expect_400(f"/api/milestones/{ms29['id']}", {"event_time": "2026-11-12 07:00"}, "lebih awal dari milestone sebelumnya")
+        _expect_400(f"/api/milestones/{ms29['id']}", {"event_time": "12-11-2026 09:00"}, "tidak valid")
+        print("[TEST 29/29] ADR-0017: koreksi waktu milestone tanpa mengubah status, urutan SOF dijaga.")
 
         print("\nSEMUA INTEGRATION TEST LULUS (100% VERIFIED)!")
 

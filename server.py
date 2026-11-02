@@ -81,6 +81,10 @@ def _matches(doc_type, agency, category):
         return "MASTER SAILING" in t or "SAILING DECLARATION" in t or t.strip() == "MSD"
     if category == "pkka":
         return "PKKA" in t or "PPKKA" in t or "WARTA MASUK" in t
+    if category == "lk3":
+        return "LK3" in t
+    if category == "spkk":
+        return "SPKK" in t or "RKBM" in t
     if category == "spog_in":
         return "SPOG" in t and "MASUK" in t
     if category == "spog_out":
@@ -154,6 +158,9 @@ def build_clearance_checklist(pc, clearances):
          "PKKA / Pemberitahuan Kedatangan Kapal Asing" if is_foreign else "Warta Masuk / PKK",
          "INAPORTNET_SIMPADU", eta - timedelta(hours=24) if eta else None,
          "PM 28/2022 Ps 4: warta + dokumen paling lambat 1x24 jam sebelum tiba"),
+        ("CLEARANCE_IN", "lk3", "LK3 Masuk / Laporan Kedatangan Kapal",
+         "INAPORTNET_SIMPADU", eta + timedelta(hours=24) if eta else None,
+         "PM 59/2021 + PM 8/2022: paling lambat 1x24 jam setelah kedatangan"),
         ("CLEARANCE_IN", "rksp", "RKSP / BC 1.0", "BEA_CUKAI",
          eta - timedelta(hours=24) if eta else None,
          "PMK 158/2017 jo PMK 97/2020: paling lambat 24 jam sebelum kedatangan"),
@@ -166,6 +173,12 @@ def build_clearance_checklist(pc, clearances):
          eta, "UU 6/2011 Ps 18: pemberitahuan + crew list; shore pass via TPI"),
         ("CLEARANCE_IN", "spog_in", "SPOG Masuk", "INAPORTNET_SPS",
          eta, "PM 28/2022: persetujuan olah gerak masuk oleh Syahbandar"),
+        # ADR-0026: SPKK tidak punya tenggat tanggal — "sebelum derek
+        # pertama bekerja" adalah peristiwa, bukan jam. Deadline None
+        # (tidak pernah overdue); status PENDING/APPROVED yang dipantau.
+        ("CLEARANCE_IN", "spkk", "SPKK / RKBM (Persetujuan Kegiatan Kapal)",
+         "INAPORTNET_SIMPADU", None,
+         "PM 59/2021: sebelum derek pertama bekerja — HUKUM, penghentian paksa oleh Syahbandar"),
         ("CLEARANCE_OUT", "outward", "Outward Manifest / BC 1.1", "BEA_CUKAI",
          etd, "PMK 158/2017 jo PMK 97/2020: sebelum keberangkatan"),
         ("CLEARANCE_OUT", "phc_out", "Port Health Clearance Out", "KARANTINA_KESEHATAN",
@@ -227,6 +240,115 @@ def build_clearance_checklist(pc, clearances):
     }
 
 
+def post_atd_deadlines(pc, latest_laytime, disputes):
+    """Tenggat pasca-ATD (SOP Tahap 5, ADR-0022).
+
+    Sebelum ini tidak ada satu pun tenggat pasca-ATD yang dihitung:
+    laytime maks 3 hari, voucher maks 7 hari, FDA kirim maks 30 hari
+    (Q31), sengketa maks 14 hari sejak diajukan. Datanya sudah ada —
+    atd, laytime_calculations, finance_closed_at, dan
+    fda_disputes.deadline_date — hanya belum pernah dirangkai jadi
+    hitung-mundur. Dipakai detail (semua item, termasuk yang selesai)
+    dan papan shift (hanya yang belum selesai).
+    days_left memakai (due - now).days (floor): tenggat hari ini -> 0,
+    lewat 12 jam -> -1 ("Terlambat 1d"). Selesai: laytime bila sudah
+    ada hasil kalkulasi; voucher + FDA bila finance sudah closed
+    (tidak ada penanda "voucher terkumpul" / "FDA terkirim" yang lebih
+    rinci di sistem — dicatat sebagai batasan, bukan ditebak).
+    Rekonsiliasi 14 hari (Tahap 5) TIDAK dibuat badge sendiri: tidak ada
+    status "draf FDA terkirim" yang membedakannya dari FDA 30 hari;
+    hasil rekonsiliasinya adalah matriks selisih Gap 3."""
+    atd_raw = pc.get("atd")
+    if not atd_raw:
+        return []
+    try:
+        atd = parse_iso(atd_raw)
+    except Exception:
+        return []
+    now = datetime.now()
+    finance_closed = bool(pc.get("finance_closed_at"))
+    items = []
+    for key, label, due, done in (
+        ("voucher", "Voucher", atd + timedelta(days=7), finance_closed),
+        ("laytime", "Laytime", atd + timedelta(days=3), latest_laytime is not None),
+        ("fda", "FDA", atd + timedelta(days=30), finance_closed),
+    ):
+        dl = (due - now).days
+        items.append({"key": key, "label": label, "due": _fmt(due),
+                      "days_left": dl, "overdue": (not done and dl < 0), "done": bool(done)})
+    for d in disputes or []:
+        if d.get("status") not in ("OPEN", "UNDER_REVIEW"):
+            continue
+        try:
+            # deadline_date disimpan sebagai tanggal saja (YYYY-MM-DD);
+            # parse_iso tidak mengenal format itu, jadi fallback manual.
+            try:
+                due = parse_iso(d["deadline_date"])
+            except Exception:
+                due = datetime.strptime(d["deadline_date"], "%Y-%m-%d")
+        except Exception:
+            continue
+        dl = (due - now).days
+        label = f"Sengketa {d.get('item_name') or ''}".strip()
+        items.append({"key": "dispute", "label": label, "due": _fmt(due),
+                      "days_left": dl, "overdue": dl < 0, "done": False,
+                      "dispute_id": d.get("id")})
+    return items
+
+
+CERT_EXPIRING_DAYS = 30  # "akan expired" = kedaluwarsa dalam 30 hari
+
+
+def _cert_days_left(expiry_date):
+    """Sisa hari sertifikat (tanggal saja YYYY-MM-DD); None bila rusak."""
+    try:
+        due = datetime.strptime(expiry_date, "%Y-%m-%d").date()
+    except Exception:
+        return None
+    return (due - datetime.now().date()).days
+
+
+def _cert_status(days_left):
+    if days_left is None or days_left > CERT_EXPIRING_DAYS:
+        return "ok"
+    if days_left < 0:
+        return "expired"
+    return "expiring"
+
+
+def _cert_with_status(c):
+    d = dict(c)
+    dl = _cert_days_left(c.get("expiry_date") or "")
+    d["days_left"] = dl
+    d["status"] = _cert_status(dl)
+    return d
+
+
+def cert_alerts_for(certs):
+    """Peringatan sertifikat (ADR-0025): per jenis, hanya expiry TERBARU
+    yang dinilai (kapal boleh punya baris lama + baru — mis. SSCEC lama
+    yang sudah diganti). 'expired' bila sudah lewat, 'expiring' bila
+    sisa <= 30 hari. Dipakai detail (daftar lengkap membawa days_left +
+    status) dan papan shift (hanya alert)."""
+    latest = {}
+    for c in certs:
+        key = (c.get("cert_type") or "").strip()
+        if not key:
+            continue
+        cur = latest.get(key)
+        if cur is None or (c.get("expiry_date") or "") > (cur.get("expiry_date") or ""):
+            latest[key] = c
+    alerts = []
+    for c in latest.values():
+        dl = _cert_days_left(c.get("expiry_date") or "")
+        st = _cert_status(dl)
+        if st == "ok":
+            continue
+        alerts.append({"cert_type": c.get("cert_type"), "cert_number": c.get("cert_number"),
+                       "expiry_date": c.get("expiry_date"), "days_left": dl, "status": st})
+    return sorted(alerts, key=lambda a: a["days_left"])
+
+
 # Urutan status port call (ADR-0017): status hanya boleh MAJU. Milestone
 # yang dicatat telat (mis. EOSP setelah kapal DEPARTED) tetap tersimpan
 # sebagai fakta lapangan, tapi TIDAK boleh menarik status ke belakang —
@@ -276,7 +398,7 @@ INAPORTNET_LEVELS = {
     "KELAS III (KUPP)": "Kelas III (KUPP)",
 }
 CLEARANCE_AGENCIES = ("INAPORTNET_SIMPADU", "INAPORTNET_SPS", "BEA_CUKAI", "IMIGRASI", "KARANTINA_KESEHATAN", "BARANTIN", "BUP_PELINDO")
-MILESTONE_CODES = ("EOSP", "ANCHORED", "NOR_TENDERED", "FREE_PRATIQUE", "PILOT_ON_BOARD", "FIRST_LINE", "ALL_FAST", "COMMENCED_CARGO", "COMPLETED_CARGO", "CAST_OFF", "SAILED")
+MILESTONE_CODES = ("EOSP", "ANCHORED", "NOR_TENDERED", "FREE_PRATIQUE", "PILOT_ON_BOARD", "FIRST_LINE", "ALL_FAST", "GANGWAY_DOWN", "COMMENCED_CARGO", "COMPLETED_CARGO", "COB", "CAST_OFF", "SAILED")
 
 def _norm_enum(value, allowed, field):
     """Normalisasi + whitelist nilai enum dari payload. None berarti tidak
@@ -587,22 +709,31 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             clearances_by_pc = {}
             for r in c.fetchall():
                 clearances_by_pc.setdefault(r["port_call_id"], []).append(dict(r))
+            # ADR-0022: laytime sudah dihitung atau belum (untuk tenggat
+            # pasca-ATD) + sengketa yang belum selesai beserta tenggatnya.
+            c.execute("SELECT DISTINCT port_call_id FROM laytime_calculations")
+            has_laytime = {r[0] for r in c.fetchall()}
+            # ADR-0025: sertifikat per kapal (untuk badge expired/akan expired).
+            c.execute("SELECT * FROM vessel_certificates")
+            certs_by_imo = {}
+            for r in c.fetchall():
+                certs_by_imo.setdefault(r["vessel_imo"], []).append(dict(r))
             c.execute("""
-            SELECT d.port_call_id, d.disputed_amount, dis.item_name
+            SELECT d.id, d.port_call_id, d.disputed_amount, d.deadline_date, d.status, dis.item_name
             FROM fda_disputes d
             JOIN disbursements dis ON d.disbursement_id = dis.id
-            WHERE d.status = 'OPEN'
+            WHERE d.status IN ('OPEN', 'UNDER_REVIEW')
             """)
             disputes_by_pc = {}
             for r in c.fetchall():
-                disputes_by_pc.setdefault(r["port_call_id"], []).append(
-                    {"item_name": r["item_name"], "disputed_amount": r["disputed_amount"]})
+                disputes_by_pc.setdefault(r["port_call_id"], []).append(dict(r))
             conn.close()
 
             now = datetime.now()
             cards = []
             totals = {"overdue_docs": 0, "spb_under_6h": 0, "spb_expired": 0,
-                      "needs_spb": 0, "open_disputes": 0, "active_calls": len(pcs)}
+                      "needs_spb": 0, "open_disputes": 0, "post_atd_overdue": 0,
+                      "cert_alerts": 0, "active_calls": len(pcs)}
             for pc in pcs:
                 chk = build_clearance_checklist(pc, clearances_by_pc.get(pc["id"], []))
                 overdue = [i["doc_type"] for i in chk["items"] if i["overdue"]]
@@ -621,12 +752,22 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     except Exception:
                         spb_state = "none"
                 needs_spb = pc["status"] == "BERTHED" and not pc.get("spb_issued_at")
-                open_dis = disputes_by_pc.get(pc["id"], [])
+                _all_dis = disputes_by_pc.get(pc["id"], [])
+                open_dis = [d for d in _all_dis if d["status"] == "OPEN"]
+                # ADR-0022: tenggat pasca-ATD — di kartu hanya yang belum
+                # selesai; yang sudah selesai tidak perlu menarik perhatian.
+                _patd = post_atd_deadlines(pc, True if pc["id"] in has_laytime else None, _all_dis)
+                pending_patd = [i for i in _patd if not i["done"]]
+                patd_overdue = sum(1 for i in pending_patd if i["overdue"])
+                # ADR-0025: peringatan sertifikat kapal (expired/akan expired).
+                _cert_alerts = cert_alerts_for(certs_by_imo.get(pc["vessel_imo"], []))
                 totals["overdue_docs"] += len(overdue)
                 totals["spb_under_6h"] += 1 if spb_state == "under_6h" else 0
                 totals["spb_expired"] += 1 if spb_state == "expired" else 0
                 totals["needs_spb"] += 1 if needs_spb else 0
                 totals["open_disputes"] += len(open_dis)
+                totals["post_atd_overdue"] += patd_overdue
+                totals["cert_alerts"] += 1 if _cert_alerts else 0
                 cards.append({
                     "id": pc["id"], "vessel_name": pc["vessel_name"],
                     "port_name": pc["port_name"], "status": pc["status"],
@@ -635,13 +776,16 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     "overdue_docs": overdue,
                     "spb_state": spb_state, "spb_hours_left": spb_hours_left,
                     "needs_spb": needs_spb, "open_disputes": open_dis,
+                    "post_atd": pending_patd, "post_atd_overdue": patd_overdue,
+                    "cert_alerts": _cert_alerts,
                 })
             # Paling mendesak dulu: ada peringatan, lalu dokumen lewat
             # tenggat terbanyak, lalu SPB paling dekat kedaluwarsa.
             def _urgency(card):
                 has_alert = bool(card["overdue_docs"] or card["spb_state"] in ("under_6h", "expired")
-                                 or card["needs_spb"] or card["open_disputes"])
-                return (0 if has_alert else 1, -len(card["overdue_docs"]),
+                                 or card["needs_spb"] or card["open_disputes"]
+                                 or card["post_atd_overdue"] or card["cert_alerts"])
+                return (0 if has_alert else 1, -(len(card["overdue_docs"]) + card["post_atd_overdue"]),
                         card["spb_hours_left"] if card["spb_hours_left"] is not None else 9999)
             cards.sort(key=_urgency)
             self.send_json({"cards": cards, "totals": totals})
@@ -686,6 +830,26 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
 
             self.send_json({"ports": list(port_map.values()), "vessels": vessels})
             return
+
+        # Sertifikat kapal (ADR-0025): daftar per kapal.
+        if path.startswith("/api/vessels/") and path.endswith("/certificates"):
+            parts = path.strip("/").split("/")
+            if len(parts) == 4:
+                imo = parts[2]
+                conn = get_db()
+                c = conn.cursor()
+                c.execute("SELECT 1 FROM master_vessels WHERE imo = ?", (imo,))
+                if not c.fetchone():
+                    conn.close()
+                    self.send_json({"error": "Kapal tidak ditemukan"}, status=404)
+                    return
+                c.execute("SELECT * FROM vessel_certificates WHERE vessel_imo = ? ORDER BY cert_type ASC, expiry_date DESC", (imo,))
+                certs = [dict(r) for r in c.fetchall()]
+                conn.close()
+                self.send_json({"imo": imo,
+                                "certificates": [_cert_with_status(c) for c in certs],
+                                "alerts": cert_alerts_for(certs)})
+                return
 
         if path.startswith("/api/port-calls/"):
             parts = path.strip("/").split("/")
@@ -751,6 +915,17 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 c.execute("SELECT * FROM laytime_calculations WHERE port_call_id = ? ORDER BY id DESC LIMIT 1", (pc_id,))
                 _lt = c.fetchone()
                 res["latest_laytime"] = dict(_lt) if _lt else None
+
+                # Tenggat pasca-ATD (ADR-0022): laytime 3d, voucher 7d,
+                # FDA 30d, sengketa 14d — dihitung dari ATD di atas.
+                res["post_atd"] = post_atd_deadlines(res, res["latest_laytime"], res["disputes"])
+
+                # Sertifikat kapal (ADR-0025): daftar lengkap + peringatan
+                # (expired / akan expired <= 30 hari) untuk kapal ini.
+                c.execute("SELECT * FROM vessel_certificates WHERE vessel_imo = ? ORDER BY cert_type ASC, expiry_date DESC", (pc["vessel_imo"],))
+                _certs = [dict(r) for r in c.fetchall()]
+                res["certificates"] = [_cert_with_status(c) for c in _certs]
+                res["cert_alerts"] = cert_alerts_for(_certs)
 
                 conn.close()
                 self.send_json(res)
@@ -986,6 +1161,50 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json({"status": "success", "code": code, "message": f"Pelabuhan {name} ({code}) berhasil ditambahkan"})
             return
 
+        # Sertifikat kapal (ADR-0025): tambah sertifikat untuk satu kapal.
+        # Jenis bebas teks (sertifikat beragam, tidak di-whitelist);
+        # tanggal wajib format YYYY-MM-DD. Tanggal kedaluwarsa di masa
+        # lalu BOLEH dicatat — justru itulah yang memicu badge merah.
+        if path.startswith("/api/vessels/") and path.endswith("/certificates"):
+            parts = path.strip("/").split("/")
+            if len(parts) == 4:
+                imo = parts[2]
+                cert_type = _req_text(payload.get("cert_type"), "cert_type")
+                expiry_raw = _req_text(payload.get("expiry_date"), "expiry_date")
+                try:
+                    expiry = datetime.strptime(expiry_raw, "%Y-%m-%d").date()
+                except ValueError:
+                    raise _BadRequest("expiry_date harus tanggal valid (YYYY-MM-DD)")
+                issued_raw = _opt_text(payload.get("issued_date"), "issued_date")
+                issued = None
+                if issued_raw:
+                    try:
+                        issued = datetime.strptime(issued_raw, "%Y-%m-%d").date()
+                    except ValueError:
+                        raise _BadRequest("issued_date harus tanggal valid (YYYY-MM-DD)")
+                cert_number = _opt_text(payload.get("cert_number"), "cert_number")
+                notes = _opt_text(payload.get("notes"), "notes")
+                conn = get_db()
+                c = conn.cursor()
+                c.execute("SELECT 1 FROM master_vessels WHERE imo = ?", (imo,))
+                if not c.fetchone():
+                    conn.close()
+                    self.send_json({"error": "Kapal tidak ditemukan"}, status=404)
+                    return
+                with conn:
+                    cur = conn.execute(
+                        "INSERT INTO vessel_certificates (vessel_imo, cert_type, cert_number, issued_date, expiry_date, notes) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (imo, cert_type, cert_number,
+                         issued.isoformat() if issued else None,
+                         expiry.isoformat(), notes),
+                    )
+                    cert_id = cur.lastrowid
+                conn.close()
+                self.send_json({"status": "success", "certificate_id": cert_id,
+                                "message": f"Sertifikat {cert_type} untuk {imo} berhasil ditambahkan"})
+                return
+
         if path == "/api/master/vessels":
             imo = _strip_or_empty(payload.get("imo"))
             name = _strip_or_empty(payload.get("name"))
@@ -1213,6 +1432,8 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                         template = [
                             ("INAPORTNET_SIMPADU", first_doc,
                              "Warta kedatangan — PM 28/2022 Ps 4: paling lambat 1x24 jam sebelum tiba"),
+                            ("INAPORTNET_SIMPADU", "LK3 Masuk / Laporan Kedatangan Kapal",
+                             "PM 59/2021 + PM 8/2022: paling lambat 1x24 jam setelah kedatangan"),
                             ("BEA_CUKAI", "RKSP / BC 1.0",
                              "PMK 158/2017 jo PMK 97/2020: paling lambat 24 jam sebelum kedatangan"),
                             ("BEA_CUKAI", "Inward Manifest / BC 1.1",
@@ -1223,6 +1444,8 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                              "UU 6/2011 Ps 18: pemberitahuan + crew list; shore pass via TPI"),
                             ("INAPORTNET_SPS", "SPOG Masuk",
                              "PM 28/2022: persetujuan olah gerak masuk oleh Syahbandar"),
+                            ("INAPORTNET_SIMPADU", "SPKK / RKBM (Persetujuan Kegiatan Kapal)",
+                             "PM 59/2021: sebelum derek pertama bekerja — HUKUM, penghentian paksa oleh Syahbandar"),
                             ("BEA_CUKAI", "Outward Manifest / BC 1.1",
                              "PMK 158/2017 jo PMK 97/2020: sebelum keberangkatan"),
                             ("KARANTINA_KESEHATAN", "Port Health Clearance Out",

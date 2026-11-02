@@ -25,7 +25,7 @@ TABLES = [
     "master_ports", "master_terminals", "master_vessels", "master_branches",
     "master_principals", "port_calls", "port_call_charter_parties", "clearances",
     "milestones", "sof_stoppages", "disbursements", "fda_disputes", "audit_logs",
-    "users", "spb_history", "laytime_calculations",
+    "users", "spb_history", "laytime_calculations", "vessel_certificates",
 ]
 
 
@@ -565,6 +565,25 @@ def init_db():
         )
         """)
 
+        # Sertifikat kapal (ADR-0025): SSCEC (maks 6 bulan, Tahap 1) dan
+        # sertifikat statutori kelaiklautan (Tahap 4 §4.6) sebelumnya hanya
+        # teks remarks di seed — tidak terlacak masa berlakunya. Satu baris
+        # per sertifikat; kapal boleh punya beberapa baris jenis yang sama
+        # (lama + baru) — yang dipakai badge adalah expiry terbaru per jenis.
+        # expiry_date/issued_date disimpan tanggal saja (YYYY-MM-DD).
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS vessel_certificates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vessel_imo TEXT NOT NULL,
+            cert_type TEXT NOT NULL,
+            cert_number TEXT,
+            issued_date TEXT,
+            expiry_date TEXT NOT NULL,
+            notes TEXT,
+            FOREIGN KEY (vessel_imo) REFERENCES master_vessels (imo)
+        )
+        """)
+
         # Audit Trail (Immutable Log 10 Tahun)
         conn.execute("""
         CREATE TABLE IF NOT EXISTS audit_logs (
@@ -641,10 +660,9 @@ def seed_sample_data():
     cursor = conn.cursor()
 
     def _count(table):
-        # WHITELIST ONLY (ADR-0019): `table` hanya dipanggil dengan 5
-        # nama tabel konstan di bawah (master_ports, master_terminals,
-        # master_branches, master_principals, master_vessels) — JANGAN
-        # pernah meneruskan nilai dari payload/path ke sini.
+        # WHITELIST ONLY (ADR-0019): `table` hanya dipanggil dengan nama
+        # tabel konstan di bawah — JANGAN pernah meneruskan nilai dari
+        # payload/path ke sini.
         return cursor.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
 
     ports_sql = """
@@ -743,10 +761,23 @@ def seed_sample_data():
             ('PC-2026-JKT-0001', 'AGENCY_FEE', 'Official Agency Fee', 25000000, 25000000, NULL, NULL)
             """)
 
+    # Sertifikat kapal contoh (ADR-0025): SSCEC MV. PACIFIC GLORY.
+    # Tanggal 2027-12-31 adalah placeholder dari remarks seed
+    # "SSCEC valid hingga 2027" (hanya menyebut tahun) — GANTI dengan
+    # tanggal kedaluwarsa sertifikat yang sebenarnya sebelum dipakai.
+    if _count("vessel_certificates") == 0:
+        with conn:
+            conn.execute("""
+            INSERT INTO vessel_certificates (vessel_imo, cert_type, cert_number, issued_date, expiry_date, notes) VALUES
+                ('9431289', 'SSCEC', 'SSCEC-2026-114', '2026-06-15', '2027-12-31', 'Tanggal kedaluwarsa placeholder dari remarks seed — ganti dengan tanggal asli')
+                """)
+
     # Migrasi data lama: bila sample PC sudah ada (DB dari versi lama, hanya
     # 5 item clearance), tambahkan item gate SPB yang belum ada sebagai
     # APPROVED dengan nomor contoh, agar sample tetap lolos gate SPB.
     gate_items = [
+        ("INAPORTNET_SIMPADU", "LK3 Masuk / Laporan Kedatangan Kapal", "LK3-IN-2026-552", "Warta LK3 Masuk terverifikasi"),
+        ("INAPORTNET_SIMPADU", "SPKK / RKBM (Persetujuan Kegiatan Kapal)", "SPKK-2026-118", "SPKK terbit sebelum derek bekerja"),
         ("IMIGRASI", "Immigration Crew List", "IMM-CL-2026-441", "Crew list + paspor diperiksa TPI"),
         ("BEA_CUKAI", "Outward Manifest / BC 1.1", "BC11-OUT-7713", "Manifes keluar diserahkan sebelum berlayar"),
         ("KARANTINA_KESEHATAN", "Port Health Clearance Out", "PHC-OUT-2026-118", "Pemeriksaan karantina keberangkatan selesai"),

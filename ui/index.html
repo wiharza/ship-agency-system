@@ -211,6 +211,8 @@
             </div>
           </div>
           <div style="margin-top: 8px;">
+            <div id="ov-post-atd" style="display: none; gap: 4px; flex-wrap: wrap; margin-bottom: 8px;"></div>
+            <div id="ov-certs" style="display: none; gap: 4px; flex-wrap: wrap; margin-bottom: 8px; align-items: center;"></div>
             <button class="btn btn-outline" id="btn-edit-pc" style="padding: 4px 10px; font-size: 12px;" onclick="openEditPortCallModal()">✏️ Ubah ETA / ETD / Muatan</button>
             <small style="color: var(--text-muted); font-size: 11px; margin-left: 8px;">Tenggat RKSP (ETA−24 jam) dan permohonan SPB (ETD−4 jam) dihitung ulang dari nilai baru.</small>
           </div>
@@ -269,8 +271,10 @@
                   <option value="PILOT_ON_BOARD">Pandu Naik (POB)</option>
                   <option value="FIRST_LINE">Tali Pertama (First Line)</option>
                   <option value="ALL_FAST">Sandar Sempurna (All Fast)</option>
+                  <option value="GANGWAY_DOWN">Tangga Turun (Gangway Down)</option>
                   <option value="COMMENCED_CARGO">Mulai Bongkar/Muat</option>
                   <option value="COMPLETED_CARGO">Selesai Bongkar/Muat</option>
+                  <option value="COB">Dokumen Muatan di Kapal (COB)</option>
                   <option value="CAST_OFF">Lepas Tali (Cast Off)</option>
                   <option value="SAILED">Bertolak (Sailed)</option>
                 </select>
@@ -421,6 +425,7 @@
                 <th>Rincian Pos Biaya</th>
                 <th>Estimasi PDA (IDR)</th>
                 <th>Realisasi FDA (IDR)</th>
+                <th>Selisih FDA − PDA (IDR)</th>
                 <th>No Billing SIMPONI / NTPN</th>
                 <th>Aksi</th>
               </tr>
@@ -498,6 +503,8 @@
         if (t.spb_under_6h) parts.push(`<span style="color:#fbbf24;">${t.spb_under_6h} SPB sisa &lt; 6 jam</span>`);
         if (t.needs_spb) parts.push(`<span style="color:#fbbf24;">${t.needs_spb} sandar, SPB belum diterbitkan</span>`);
         if (t.open_disputes) parts.push(`<span style="color:#f87171;">${t.open_disputes} sengketa OPEN</span>`);
+        if (t.post_atd_overdue) parts.push(`<span style="color:#f87171;">${t.post_atd_overdue} tenggat pasca-ATD lewat</span>`);
+        if (t.cert_alerts) parts.push(`<span style="color:#f87171;">${t.cert_alerts} kapal sertifikatnya kedaluwarsa/akan expired</span>`);
         boardEl.innerHTML = `<strong style="color:var(--cyan);">Papan Shift — ${t.active_calls || 0} port call aktif:</strong> ` +
           (parts.length ? parts.join(' • ') : '<span style="color:#34d399;">tidak ada yang mendesak</span>');
       } else {
@@ -520,6 +527,8 @@
           else if (a.spb_state === 'under_6h') bits.push(`<span class="badge badge-yellow">SPB ${a.spb_hours_left} jam lagi</span>`);
           if (a.needs_spb) bits.push(`<span class="badge badge-yellow">SPB belum diterbitkan</span>`);
           if (a.open_disputes && a.open_disputes.length) bits.push(`<span class="badge badge-red">${a.open_disputes.length} sengketa OPEN</span>`);
+          if (a.post_atd && a.post_atd.length) bits.push(...a.post_atd.map(postAtdBadge));
+          if (a.cert_alerts && a.cert_alerts.length) bits.push(...a.cert_alerts.map(certBadge));
           if (bits.length) alerts = `<div style="margin-top: 6px; display: flex; gap: 4px; flex-wrap: wrap;">${bits.join('')}</div>`;
         }
         item.innerHTML = `
@@ -537,6 +546,25 @@
       if (!activePortCallId && data.port_calls.length > 0) {
         selectPortCall(data.port_calls[0].id);
       }
+    }
+
+    // Badge tenggat pasca-ATD (ADR-0022): dipakai kartu shift-board dan
+    // header detail. "due 2d" = sisa 2 hari; "Terlambat 1d" = lewat 1 hari.
+    function postAtdBadge(it) {
+      if (it.done) return `<span class="badge badge-green">${esc(it.label)} Selesai</span>`;
+      if (it.overdue) return `<span class="badge badge-red">${esc(it.label)} Terlambat ${-it.days_left}d</span>`;
+      const cls = it.days_left <= 2 ? 'badge-yellow' : 'badge-cyan';
+      return `<span class="badge ${cls}">${esc(it.label)} due ${it.days_left}d</span>`;
+    }
+
+    // Badge sertifikat kapal (ADR-0025): merah bila kedaluwarsa, kuning
+    // bila sisa <= 30 hari, hijau bila masih berlaku. Dipakai header
+    // detail (semua sertifikat) dan kartu shift-board (hanya alert).
+    function certBadge(c) {
+      const cls = c.status === 'expired' ? 'badge-red' : (c.status === 'expiring' ? 'badge-yellow' : 'badge-green');
+      const when = c.status === 'expired' ? `kedaluwarsa ${-c.days_left}d lalu`
+        : (c.status === 'expiring' ? `${c.days_left}d lagi` : `s.d. ${esc(c.expiry_date)}`);
+      return `<span class="badge ${cls}">${esc(c.cert_type)} — ${when}</span>`;
     }
 
     async function selectPortCall(id) {
@@ -569,6 +597,26 @@
       document.getElementById('ov-eta').innerText = currentData.eta;
       document.getElementById('ov-etd').innerText = currentData.etd || '-';
       document.getElementById('ov-status').innerText = currentData.status;
+
+      // Tenggat pasca-ATD (ADR-0022): laytime 3d, voucher 7d, FDA 30d,
+      // sengketa 14d — tampil di header detail bila ATD sudah ada.
+      const patdEl = document.getElementById('ov-post-atd');
+      const patd = currentData.post_atd || [];
+      if (patd.length) {
+        patdEl.style.display = 'flex';
+        patdEl.innerHTML = `<span style="font-size: 12px; color: var(--text-muted); align-self: center;">Tenggat pasca-ATD:</span>` + patd.map(postAtdBadge).join('');
+      } else {
+        patdEl.style.display = 'none';
+        patdEl.innerHTML = '';
+      }
+
+      // Sertifikat kapal (ADR-0025): daftar + badge masa berlaku.
+      const certsEl = document.getElementById('ov-certs');
+      const certs = currentData.certificates || [];
+      certsEl.style.display = 'flex';
+      certsEl.innerHTML = `<span style="font-size: 12px; color: var(--text-muted); align-self: center;">Sertifikat Kapal:</span>` +
+        (certs.length ? certs.map(certBadge).join('') : `<span style="font-size: 12px; color: var(--text-muted);">belum ada data.</span>`) +
+        ` <button class="btn btn-outline" style="padding: 2px 8px; font-size: 11px;" onclick="openCertModal()">+ Tambah Sertifikat</button>`;
 
       // Badges
       const badgesEl = document.getElementById('view-badges');
@@ -696,22 +744,49 @@
         stpTable.appendChild(tr);
       });
 
-      // Render Finance
+      // Render Finance — matriks selisih (variance analysis, ADR-0023):
+      // kolom Selisih = FDA − PDA per pos + baris TOTAL. Pos yang FDA-nya
+      // masih 0 padahal PDA > 0 dianggap BELUM diisi (bukan selisih 0) —
+      // mengikuti aturan close-finance yang sama (FDA 0 pada baris
+      // berp-PDA memblokir). Total selisih = total FDA − total PDA.
       const finTable = document.getElementById('finance-table-body');
       finTable.innerHTML = '';
+      let totPda = 0, totFda = 0, unfilled = 0;
       (currentData.disbursements || []).forEach(d => {
+        const pda = Number(d.pda_estimate) || 0;
+        const fda = Number(d.fda_actual) || 0;
+        totPda += pda; totFda += fda;
+        const filled = !(fda === 0 && pda > 0);
+        if (!filled) unfilled++;
+        const diff = fda - pda;
+        const diffCell = !filled ? '<span style="color: var(--text-muted);">Belum diisi</span>'
+          : diff > 0 ? `<span style="color:#f87171;">Rp +${diff.toLocaleString('id-ID')}</span>`
+          : diff < 0 ? `<span style="color:#34d399;">Rp ${diff.toLocaleString('id-ID')}</span>`
+          : '<span style="color: var(--text-muted);">Rp 0</span>';
         const tr = document.createElement('tr');
         tr.innerHTML = `
           <td><span class="badge badge-cyan">${esc(d.category)}</span></td>
           <td>${esc(d.item_name)}</td>
-          <td>Rp ${Number(d.pda_estimate).toLocaleString('id-ID')}</td>
-          <td>Rp ${Number(d.fda_actual).toLocaleString('id-ID')}</td>
+          <td>Rp ${pda.toLocaleString('id-ID')}</td>
+          <td>Rp ${fda.toLocaleString('id-ID')}</td>
+          <td>${diffCell}</td>
           <td>${d.ntpn ? 'NTPN: ' + esc(d.ntpn) : (d.simponi_billing ? 'Bill: ' + esc(d.simponi_billing) : '-')}</td>
           <td style="white-space: nowrap;"><button class="btn btn-outline" style="padding:2px 8px; font-size:11px;" onclick="openEditDisbursementModal(${d.id})">Lengkapi FDA</button>
           <button class="btn btn-outline" style="padding:2px 8px; font-size:11px;" onclick="openDisputeModal(${d.id})">Ajukan Sengketa</button></td>
         `;
         finTable.appendChild(tr);
       });
+      const totDiff = totFda - totPda;
+      const totRow = document.createElement('tr');
+      totRow.style.cssText = 'font-weight: bold; border-top: 2px solid var(--border);';
+      totRow.innerHTML = `
+        <td colspan="2">TOTAL</td>
+        <td>Rp ${totPda.toLocaleString('id-ID')}</td>
+        <td>Rp ${totFda.toLocaleString('id-ID')}</td>
+        <td style="color:${totDiff > 0 ? '#f87171' : (totDiff < 0 ? '#34d399' : 'inherit')};">Rp ${totDiff > 0 ? '+' : ''}${totDiff.toLocaleString('id-ID')}</td>
+        <td colspan="2" style="font-weight: normal; font-size: 11px; color: var(--text-muted);">${unfilled ? `* ${unfilled} pos FDA belum diisi — total FDA & selisih belum final` : 'Semua pos FDA sudah terisi'}</td>
+      `;
+      finTable.appendChild(totRow);
 
       // Render Disputes
       const dTable = document.getElementById('disputes-table-body');
@@ -1054,6 +1129,35 @@
       openNewPortCallModal();
       document.getElementById('modal-port-select').value = data.code;
       onPortSelectChange();
+    }
+
+    // Sertifikat kapal (ADR-0025).
+    function openCertModal() {
+      document.getElementById('new-cert-type').value = '';
+      document.getElementById('new-cert-number').value = '';
+      document.getElementById('new-cert-issued').value = '';
+      document.getElementById('new-cert-expiry').value = '';
+      document.getElementById('new-cert-notes').value = '';
+      document.getElementById('modal-new-cert').style.display = 'flex';
+    }
+    function closeCertModal() { document.getElementById('modal-new-cert').style.display = 'none'; }
+
+    async function submitNewCert() {
+      const cert_type = document.getElementById('new-cert-type').value.trim();
+      const cert_number = document.getElementById('new-cert-number').value.trim();
+      const issued_date = document.getElementById('new-cert-issued').value;
+      const expiry_date = document.getElementById('new-cert-expiry').value;
+      const notes = document.getElementById('new-cert-notes').value.trim();
+      if (!cert_type) { alert("Jenis sertifikat wajib diisi!"); return; }
+      if (!expiry_date) { alert("Tanggal kedaluwarsa wajib diisi!"); return; }
+      const res = await fetch(`/api/vessels/${currentData.vessel_imo}/certificates`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cert_type, cert_number, issued_date: issued_date || null, expiry_date, notes })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert("Gagal: " + (data.error || "Terjadi kesalahan")); return; }
+      closeCertModal();
+      await selectPortCall(activePortCallId);
     }
 
     async function signOpsClosure() {
@@ -1897,6 +2001,52 @@
       <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;">
         <button class="btn btn-outline" onclick="closePortModal()">Batal</button>
         <button class="btn btn-cyan" onclick="submitNewPort()">Simpan Pelabuhan</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Tambah Sertifikat Kapal (ADR-0025) -->
+  <div id="modal-new-cert" class="modal-overlay">
+    <div class="card modal-card" style="background: #0f172a; border: 1px solid var(--cyan); box-shadow: 0 10px 25px rgba(0,0,0,0.6);">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h3 style="margin: 0; color: var(--cyan);">📜 Tambah Sertifikat Kapal</h3>
+        <button class="btn btn-outline" style="padding: 2px 8px; font-size: 13px;" onclick="closeCertModal()">✕</button>
+      </div>
+      <div class="form-group">
+        <label>Jenis Sertifikat (wajib):</label>
+        <input type="text" id="new-cert-type" list="cert-types" placeholder="Misal: SSCEC">
+        <datalist id="cert-types">
+          <option value="SSCEC"></option>
+          <option value="Sertifikat Keselamatan Konstruksi"></option>
+          <option value="Sertifikat Keselamatan Perlengkapan"></option>
+          <option value="Sertifikat Garis Muat"></option>
+          <option value="Sertifikat Pencegahan Pencemaran Minyak (IOPP)"></option>
+          <option value="Sertifikat Manajemen Keselamatan (SMC)"></option>
+          <option value="Sertifikat Keamanan Kapal (ISSC)"></option>
+        </datalist>
+      </div>
+      <div class="grid-2" style="gap: 8px;">
+        <div class="form-group">
+          <label>Nomor Sertifikat (opsional):</label>
+          <input type="text" id="new-cert-number" placeholder="Misal: SSCEC-2026-114">
+        </div>
+        <div class="form-group">
+          <label>Tanggal Terbit (opsional):</label>
+          <input type="date" id="new-cert-issued">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Tanggal Kedaluwarsa (wajib):</label>
+        <input type="date" id="new-cert-expiry">
+        <small style="color: var(--text-muted); font-size: 11px;">Tanggal di masa lalu boleh dicatat — badge merah akan muncul sebagai pengingat.</small>
+      </div>
+      <div class="form-group">
+        <label>Catatan (opsional):</label>
+        <input type="text" id="new-cert-notes" placeholder="Misal: SSCEC berlaku maks 6 bulan">
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;">
+        <button class="btn btn-outline" onclick="closeCertModal()">Batal</button>
+        <button class="btn btn-cyan" onclick="submitNewCert()">Simpan Sertifikat</button>
       </div>
     </div>
   </div>

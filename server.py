@@ -525,7 +525,7 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 pc = c.fetchone()
                 if not pc:
                     conn.close()
-                    self.send_json({"error": "Not found"}, status=404)
+                    self.send_json({"error": "Port Call tidak ditemukan"}, status=404)
                     return
 
                 # Pending clearances
@@ -1101,15 +1101,15 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                     return
                 if not pc["spb_issued_at"]:
                     conn.close()
-                    self.send_json({"error": "Gagal: SPB belum terbit — kapal belum boleh berlayar, ops tidak bisa ditutup (PM 28/2022)"}, status=400)
+                    self.send_json({"error": "SPB belum terbit — kapal belum boleh berlayar, ops tidak bisa ditutup (PM 28/2022)"}, status=400)
                     return
                 if pc["spb_expiry_at"] and datetime.now() > parse_iso(pc["spb_expiry_at"]):
                     conn.close()
-                    self.send_json({"error": f"Gagal: SPB sudah kedaluwarsa {pc['spb_expiry_at']} — terbitkan SPB baru sebelum menutup ops"}, status=400)
+                    self.send_json({"error": f"SPB sudah kedaluwarsa {pc['spb_expiry_at']} — terbitkan SPB baru sebelum menutup ops"}, status=400)
                     return
                 if pc["status"] != "DEPARTED":
                     conn.close()
-                    self.send_json({"error": f"Gagal: status kapal masih {pc['status']} — ops hanya bisa ditutup setelah kapal DEPARTED"}, status=400)
+                    self.send_json({"error": f"status kapal masih {pc['status']} — ops hanya bisa ditutup setelah kapal DEPARTED"}, status=400)
                     return
                 with conn:
                     conn.execute("""
@@ -1137,7 +1137,7 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 row = c.fetchone()
                 if not row or not row["ops_closed_at"]:
                     conn.close()
-                    self.send_json({"error": "Gagal: Otorisasi 1 (Operasional) wajib diselesaikan terlebih dahulu!"}, status=400)
+                    self.send_json({"error": "Otorisasi 1 (Operasional) wajib diselesaikan terlebih dahulu!"}, status=400)
                     return
 
                 with conn:
@@ -1155,7 +1155,14 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
             if len(parts) == 4 and parts[3] == "dispute":
                 pc_id = parts[2]
                 disbursement_id = payload.get("disbursement_id", 1)
-                amount = float(payload.get("disputed_amount", 0))
+                try:
+                    amount = float(payload.get("disputed_amount", 0))
+                except (TypeError, ValueError):
+                    # Sebelumnya float() yang gagal melempar ke handler 500
+                    # (halaman HTML, bukan JSON) — UI tidak bisa menampilkan
+                    # alasannya. Kini 400 JSON supaya UI bisa menjelaskannya.
+                    self.send_json({"error": "Nilai sengketa harus angka (IDR)"}, status=400)
+                    return
                 reason = payload.get("reason", "Keberatan tarif")
                 deadline = (datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d")
 

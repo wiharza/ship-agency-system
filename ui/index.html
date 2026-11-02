@@ -601,11 +601,18 @@
       const event_time = document.getElementById('ms-time').value;
       const remarks = document.getElementById('ms-remarks').value;
 
-      await fetch(`/api/port-calls/${activePortCallId}/milestone`, {
+      const res = await fetch(`/api/port-calls/${activePortCallId}/milestone`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ milestone_code: code, event_time, remarks })
       });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // Milestone tetap tercatat sebagai fakta lapangan, tapi status
+        // tidak berubah (mis. SAILED tanpa SPB valid) — beri tahu user.
+        alert((data.milestone_recorded ? "Milestone TERCATAT, tetapi status kapal tidak berubah: " : "Gagal: ") + (data.error || "Terjadi kesalahan"));
+        return;
+      }
       selectPortCall(activePortCallId);
     }
 
@@ -614,11 +621,13 @@
       const start_time = document.getElementById('stp-start').value;
       const end_time = document.getElementById('stp-end').value;
 
-      await fetch(`/api/port-calls/${activePortCallId}/stoppage`, {
+      const res = await fetch(`/api/port-calls/${activePortCallId}/stoppage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ category, start_time, end_time, percentage_counted: 0, remarks: "Dicatat di dermaga" })
       });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert("Gagal: " + (data.error || "Terjadi kesalahan")); return; }
       selectPortCall(activePortCallId);
     }
 
@@ -632,7 +641,13 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ nor_tendered_time, commenced_time, completed_time })
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      // Tanpa cek ini, data.result undefined saat server menolak (400)
+      // dan baris berikut melempar TypeError — kalkulasi gagal diam-diam.
+      if (!res.ok || !data.result) {
+        alert("Gagal: " + (data.error || "Hasil kalkulasi tidak tersedia"));
+        return;
+      }
       
       const out = document.getElementById('laytime-output');
       const isDemurrage = data.result.is_demurrage;
@@ -734,35 +749,42 @@
 
     async function signOpsClosure() {
       if (!confirm("Konfirmasi pengesahan Otorisasi 1 (Operasional): Seluruh perizinan selesai & kapal telah berangkat?")) return;
-      await fetch(`/api/port-calls/${activePortCallId}/close-ops`, {
+      const res = await fetch(`/api/port-calls/${activePortCallId}/close-ops`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user: "Capt. Hadi (Doc/Ops Lead)" })
       });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert("Gagal: " + (data.error || "Terjadi kesalahan")); return; }
       selectPortCall(activePortCallId);
     }
 
     async function signFinanceClosure() {
       if (!confirm("Konfirmasi pengesahan Otorisasi 2 (Keuangan): Rekonsiliasi FDA selesai & saldo telah diselesaikan?")) return;
-      await fetch(`/api/port-calls/${activePortCallId}/close-finance`, {
+      const res = await fetch(`/api/port-calls/${activePortCallId}/close-finance`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user: "Ibu Ratna (Finance Manager)" })
       });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert("Gagal: " + (data.error || "Terjadi kesalahan")); return; }
       selectPortCall(activePortCallId);
     }
 
-    function openDisputeModal(disbursementId) {
+    async function openDisputeModal(disbursementId) {
       const amt = prompt("Masukkan nilai sengketa FDA (IDR):", "3200000");
       if (!amt) return;
       const reason = prompt("Masukkan alasan sanggahan Principal:", "Klaim tarif tunda melebihi estimasi awal tanpa persetujuan");
       if (!reason) return;
 
-      fetch(`/api/port-calls/${activePortCallId}/dispute`, {
+      const res = await fetch(`/api/port-calls/${activePortCallId}/dispute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ disbursement_id: disbursementId, disputed_amount: amt, reason })
-      }).then(() => selectPortCall(activePortCallId));
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { alert("Gagal: " + (data.error || "Terjadi kesalahan")); return; }
+      selectPortCall(activePortCallId);
     }
 
     function copyHandover() {
@@ -773,10 +795,10 @@
     }
 
     function syncLocalSOF() {
-      document.getElementById('storage-status').innerText = "✓ Sinkronisasi ke server berhasil! Data terpadu aman.";
-      setTimeout(() => {
-        document.getElementById('storage-status').innerText = "💾 Tersimpan lokal di peramban (Aman dari sinyal blank-spot)";
-      }, 3000);
+      // JANGAN klaim berhasil: belum ada sinkronisasi sungguhan ke server
+      // (fitur offline SOF masih [TARGET] di PRD). Teks lama ("Sinkronisasi
+      // ke server berhasil!") bohong — tidak ada request yang dikirim.
+      document.getElementById('storage-status').innerText = "Tersimpan lokal di peramban — belum disinkronkan ke server (sinkronisasi otomatis belum tersedia).";
     }
 
     let cachedMasterData = null;

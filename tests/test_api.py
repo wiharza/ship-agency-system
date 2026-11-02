@@ -360,10 +360,16 @@ def test_integration():
             assert len(chk["clearance_in"]) == 6 and len(chk["clearance_out"]) == 6
             rksp = next(i for i in chk["items"] if i["category"] == "rksp")
             assert rksp["deadline"] == "2026-11-09 08:00", f"RKSP deadline harus ETA-24 jam, dapat {rksp['deadline']}"
-        # IMO uji harus unik per run (DB dipakai ulang antar run tes)
+        # IMO uji harus unik per run (DB dipakai ulang antar run tes).
         with urllib.request.urlopen(f"{base_url}/api/master/ports") as res:
             existing_imos = {v["imo"] for v in json.loads(res.read().decode("utf-8"))["vessels"]}
-        test_imo = next(i for i in ("9999999", "9999998", "9999997", "9999996") if i not in existing_imos)
+        # Pool 4 nilai awal habis setelah 4 run; bila habis, pakai IMO
+        # dari timestamp (unik per detik) supaya suite bisa diulang
+        # tanpa batas tanpa mengotori DB dengan IMO yang sama.
+        test_imo = next((i for i in ("9999999", "9999998", "9999997", "9999996") if i not in existing_imos), None)
+        if test_imo is None:
+            test_imo = "9" + str(int(time.time()))[-6:]
+            assert test_imo not in existing_imos, "IMO timestamp bentrok — jalankan ulang tes"
         req_vessel = urllib.request.Request(
             f"{base_url}/api/master/vessels",
             data=json.dumps({"imo": test_imo, "name": "MV. TEST BARU", "flag": "ID",
@@ -555,6 +561,24 @@ def test_integration():
         except urllib.error.HTTPError as e:
             assert e.code == 401
         print("[TEST 21/22] Logout: cookie dihapus, API menolak 401 sesudahnya.")
+
+        # 22. Test pesan error: penolakan harus menjelaskan alasannya
+        # (bukan sekadar 400) — close-ops tanpa SPB menyebut alasannya,
+        # dispute dengan nilai bukan angka dijawab 400 JSON (bukan 500).
+        # (Login ulang: tes 21 sudah logout, opener terpasang tak lagi
+        # punya cookie.)
+        ops2 = _login_opener("ops_tes", "ops-pass-123")
+        urllib.request.install_opener(ops2)
+        _expect_400(f"/api/port-calls/{pc2}/close-ops", {"user": "Capt. Hadi"}, "kedaluwarsa")
+        try:
+            urllib.request.urlopen(_post(f"/api/port-calls/{pc2}/dispute",
+                                         {"disbursement_id": 1, "disputed_amount": "bukan-angka", "reason": "tes"}))
+            assert False, "Dispute nilai bukan angka harus ditolak 400"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400, f"Dispute non-angka harus 400, dapat {e.code}"
+            body = json.loads(e.read().decode("utf-8"))
+            assert "angka" in body.get("error", ""), f"Respons 400 dispute harus menjelaskan, dapat {body}"
+        print("[TEST 22/22] Pesan error: close-ops menyebut alasan, dispute non-angka 400 JSON.")
 
         print("\nSEMUA INTEGRATION TEST LULUS (100% VERIFIED)!")
 

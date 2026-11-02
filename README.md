@@ -30,6 +30,9 @@ python3 server.py            # atau: python3 server.py 8000
 Tanpa `SESSION_SECRET` server menolak jalan. User dibuat lewat
 `scripts/create_user.py` (tidak ada user bawaan / pendaftaran publik).
 Detail autentikasi: [Autentikasi (ADR-0011)](#autentikasi-adr-0011-1-nov-2026).
+Bila sebuah proses ditolak server (mis. sign-off ops sebelum SPB
+terbit), UI menampilkan alasan penolakannya — tidak ada lagi proses
+yang gagal diam-diam (ADR-0014).
 
 Server menjalankan `init_db()` + `seed_sample_data()` saat start. Data contoh
 yang ter-seed: 4 pelabuhan, 15 terminal, 2 cabang, 2 principal, 2 kapal, dan

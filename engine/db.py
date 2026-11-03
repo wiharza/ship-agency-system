@@ -448,6 +448,14 @@ def init_db():
         )
         """)
 
+        # ADR-0028: index untuk filter tab daftar port call (status +
+        # finance_closed_at) dan urutan created_at. Idempoten; DB lama
+        # mendapatkannya saat init_db() jalan, Turso via migrasi-adr-0028.
+        conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_port_calls_status_closed
+            ON port_calls(status, finance_closed_at, created_at)
+        """)
+
         # Parameter Charter Party Port Call
         conn.execute("""
         CREATE TABLE IF NOT EXISTS port_call_charter_parties (

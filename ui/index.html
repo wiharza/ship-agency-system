@@ -143,7 +143,13 @@
           <button class="btn btn-cyan" style="padding: 4px 10px; font-size: 11px;" onclick="openNewPortCallModal()">+ Tambah</button>
         </div>
         <div id="shift-board" style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px;">Memuat papan shift…</div>
+        <!-- Daftar bertab + paginasi (ADR-0028): default hanya yang aktif,
+             supaya ratusan port call lama tidak menumpuk di sisi kanan. -->
+        <div id="pc-tabs" style="display: flex; gap: 4px; overflow-x: auto; margin-bottom: 8px; white-space: nowrap;"></div>
+        <input id="pc-search" type="text" placeholder="Cari kapal / IMO / PC-ID..." oninput="onPcSearch(this.value)" style="width: 100%; padding: 6px 8px; margin-bottom: 8px; box-sizing: border-box;" />
         <div id="pc-list">Memuat data port call...</div>
+        <div id="pc-count" style="font-size: 12px; color: var(--text-muted); margin-top: 8px;"></div>
+        <button id="pc-load-more" class="btn btn-outline" style="width: 100%; margin-top: 8px; display: none;" onclick="loadMorePortCalls()">Muat lebih banyak</button>
       </div>
     </div>
 
@@ -481,9 +487,109 @@
         .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
-    async function loadPortCalls() {
+    // Daftar port call bertab + paginasi server (ADR-0028). Default hanya
+    // yang Aktif — ratusan port call yang sudah ditutup tidak lagi
+    // menumpuk di sisi kanan; yang lama dicari lewat tab Selesai/Arsip
+    // atau kotak pencarian. Tab + kata kunci terakhir diingat di
+    // localStorage supaya refresh tidak mengulang filter.
+    const PC_PAGE_SIZE = 40;
+    const PC_TABS = [
+      ['active', 'Aktif'],
+      ['action', 'Perlu Tindakan'],
+      ['done', 'Selesai'],
+      ['archive', 'Arsip'],
+    ];
+    let pcTab = localStorage.getItem('pcTab') || 'active';
+    if (!PC_TABS.some(t => t[0] === pcTab)) pcTab = 'active';
+    let pcQuery = localStorage.getItem('pcQuery') || '';
+    let pcOffset = 0;      // jumlah baris yang sedang tampil (offset halaman berikut)
+    let pcTotal = 0;
+    let pcHasMore = false;
+    let pcSearchTimer = null;
+
+    function pcListUrl(offset, limit) {
+      const p = new URLSearchParams({ tab: pcTab, limit, offset });
+      if (pcQuery) p.set('q', pcQuery);
+      return '/api/port-calls?' + p.toString();
+    }
+
+    function renderPcTabs(counts) {
+      const el = document.getElementById('pc-tabs');
+      el.innerHTML = PC_TABS.map(([key, label]) => {
+        const n = counts ? counts[key] : undefined;
+        return `<button class="btn ${key === pcTab ? 'btn-cyan' : 'btn-outline'}" style="padding: 4px 10px; font-size: 11px; flex-shrink: 0;" onclick="setPcTab('${key}')">${label}${n === undefined ? '' : ` (${n})`}</button>`;
+      }).join('');
+    }
+
+    function setPcTab(tab) {
+      if (tab === pcTab) return;
+      pcTab = tab;
+      localStorage.setItem('pcTab', tab);
+      loadPortCalls({ reset: true });
+    }
+
+    function onPcSearch(value) {
+      clearTimeout(pcSearchTimer);
+      pcSearchTimer = setTimeout(() => {
+        pcQuery = value.trim();
+        localStorage.setItem('pcQuery', pcQuery);
+        loadPortCalls({ reset: true });
+      }, 300);
+    }
+
+    function renderPcCount() {
+      const shown = document.getElementById('pc-list').children.length;
+      document.getElementById('pc-count').textContent = pcTotal
+        ? `Menampilkan ${shown} dari ${pcTotal} port call`
+        : 'Tidak ada port call pada tab ini.';
+      document.getElementById('pc-load-more').style.display = pcHasMore ? 'block' : 'none';
+    }
+
+    async function loadMorePortCalls() {
+      await loadPortCalls({ append: true });
+    }
+
+    function renderPcCard(pc) {
+      const item = document.createElement('div');
+      item.className = 'pc-item' + (pc.id === activePortCallId ? ' active' : '');
+      item.onclick = () => selectPortCall(pc.id);
+      // Badge peringatan papan shift di kartu (ADR-0017).
+      const a = shiftAlerts[pc.id];
+      let alerts = '';
+      if (a) {
+        const bits = [];
+        if (a.overdue_docs && a.overdue_docs.length) bits.push(`<span class="badge badge-red">${a.overdue_docs.length} dok lewat tenggat</span>`);
+        if (a.spb_state === 'expired') bits.push(`<span class="badge badge-red">SPB kedaluwarsa</span>`);
+        else if (a.spb_state === 'under_6h') bits.push(`<span class="badge badge-yellow">SPB ${a.spb_hours_left} jam lagi</span>`);
+        if (a.needs_spb) bits.push(`<span class="badge badge-yellow">SPB belum diterbitkan</span>`);
+        if (a.open_disputes && a.open_disputes.length) bits.push(`<span class="badge badge-red">${a.open_disputes.length} sengketa OPEN</span>`);
+        if (a.post_atd && a.post_atd.length) bits.push(...a.post_atd.map(postAtdBadge));
+        if (a.cert_alerts && a.cert_alerts.length) bits.push(...a.cert_alerts.map(certBadge));
+        if (bits.length) alerts = `<div style="margin-top: 6px; display: flex; gap: 4px; flex-wrap: wrap;">${bits.join('')}</div>`;
+      }
+      item.innerHTML = `
+        <div class="pc-vessel">${esc(pc.vessel_name)}</div>
+        <div class="pc-meta">${esc(pc.id)} | ${esc(pc.port_name)}</div>
+        <div style="margin-top: 6px; display: flex; gap: 4px;">
+          <span class="badge ${pc.vessel_category === 'FOREIGN' ? 'badge-yellow' : 'badge-cyan'}">${esc(pc.vessel_category)}</span>
+          <span class="badge badge-green">${esc(pc.status)}</span>
+        </div>
+        ${alerts}
+      `;
+      return item;
+    }
+
+    // mode: reset (ganti tab / cari — mulai dari halaman pertama), append
+    // (tombol "Muat lebih banyak"), atau tanpa argumen = refresh sesudah
+    // aksi — ambil ulang semua baris yang sedang tampil supaya pilihan +
+    // urutan tidak hilang.
+    async function loadPortCalls(opts = {}) {
+      const append = !!opts.append;
+      const reset = !!opts.reset;
+      const offset = append ? pcOffset : 0;
+      const limit = (!append && !reset) ? Math.max(pcOffset, PC_PAGE_SIZE) : PC_PAGE_SIZE;
       const [res, boardRes] = await Promise.all([
-        fetch('/api/port-calls'),
+        fetch(pcListUrl(offset, limit)),
         fetch('/api/shift-board').catch(() => null)
       ]);
       if (res.status === 401) { location.reload(); return; }  // session habis -> halaman login
@@ -511,40 +617,17 @@
         boardEl.innerHTML = '';
       }
       const listEl = document.getElementById('pc-list');
-      listEl.innerHTML = '';
-      
-      data.port_calls.forEach(pc => {
-        const item = document.createElement('div');
-        item.className = 'pc-item' + (pc.id === activePortCallId ? ' active' : '');
-        item.onclick = () => selectPortCall(pc.id);
-        // Badge peringatan papan shift di kartu (ADR-0017).
-        const a = shiftAlerts[pc.id];
-        let alerts = '';
-        if (a) {
-          const bits = [];
-          if (a.overdue_docs && a.overdue_docs.length) bits.push(`<span class="badge badge-red">${a.overdue_docs.length} dok lewat tenggat</span>`);
-          if (a.spb_state === 'expired') bits.push(`<span class="badge badge-red">SPB kedaluwarsa</span>`);
-          else if (a.spb_state === 'under_6h') bits.push(`<span class="badge badge-yellow">SPB ${a.spb_hours_left} jam lagi</span>`);
-          if (a.needs_spb) bits.push(`<span class="badge badge-yellow">SPB belum diterbitkan</span>`);
-          if (a.open_disputes && a.open_disputes.length) bits.push(`<span class="badge badge-red">${a.open_disputes.length} sengketa OPEN</span>`);
-          if (a.post_atd && a.post_atd.length) bits.push(...a.post_atd.map(postAtdBadge));
-          if (a.cert_alerts && a.cert_alerts.length) bits.push(...a.cert_alerts.map(certBadge));
-          if (bits.length) alerts = `<div style="margin-top: 6px; display: flex; gap: 4px; flex-wrap: wrap;">${bits.join('')}</div>`;
-        }
-        item.innerHTML = `
-          <div class="pc-vessel">${esc(pc.vessel_name)}</div>
-          <div class="pc-meta">${esc(pc.id)} | ${esc(pc.port_name)}</div>
-          <div style="margin-top: 6px; display: flex; gap: 4px;">
-            <span class="badge ${pc.vessel_category === 'FOREIGN' ? 'badge-yellow' : 'badge-cyan'}">${esc(pc.vessel_category)}</span>
-            <span class="badge badge-green">${esc(pc.status)}</span>
-          </div>
-          ${alerts}
-        `;
-        listEl.appendChild(item);
-      });
+      if (!append) listEl.innerHTML = '';
+      const rows = data.port_calls || [];
+      rows.forEach(pc => listEl.appendChild(renderPcCard(pc)));
+      pcTotal = data.total ?? rows.length;
+      pcHasMore = data.has_more ?? false;
+      pcOffset = append ? pcOffset + rows.length : rows.length;
+      renderPcTabs(data.tab_counts);
+      renderPcCount();
 
-      if (!activePortCallId && data.port_calls.length > 0) {
-        selectPortCall(data.port_calls[0].id);
+      if (!activePortCallId && rows.length > 0) {
+        selectPortCall(rows[0].id);
       }
     }
 
@@ -1562,8 +1645,10 @@
     }
 
     window.onload = () => {
+      document.getElementById('pc-search').value = pcQuery;
+      renderPcTabs();
       loadSessionUser();
-      loadPortCalls();
+      loadPortCalls({ reset: true });
       loadMasterData();
     };
   </script>

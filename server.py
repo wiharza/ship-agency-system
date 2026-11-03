@@ -360,6 +360,119 @@ _STATUS_RANK = {
 }
 
 
+def _card_has_alert(card):
+    """Satu kartu papan shift butuh tindakan? (ADR-0028: dipakai tab
+    Perlu Tindakan dan urutan urgensi daftar port call.)"""
+    return bool(card["overdue_docs"] or card["spb_state"] in ("under_6h", "expired")
+                or card["needs_spb"] or card["open_disputes"]
+                or card["post_atd_overdue"] or card["cert_alerts"])
+
+
+def _board_urgency(card):
+    """Kunci urut papan shift: ada peringatan dulu, lalu dokumen lewat
+    tenggat terbanyak, lalu SPB paling dekat kedaluwarsa."""
+    return (0 if _card_has_alert(card) else 1, -(len(card["overdue_docs"]) + card["post_atd_overdue"]),
+            card["spb_hours_left"] if card["spb_hours_left"] is not None else 9999)
+
+
+def _shift_board_data(conn):
+    """Hitung kartu + total papan shift (ADR-0017/0022/0025).
+
+    Dipakai /api/shift-board dan /api/port-calls (tab Perlu Tindakan,
+    urutan urgensi, tab_counts). Mengembalikan (cards, totals); cards
+    sudah terurut paling mendesak dulu. Conn TIDAK ditutup di sini —
+    penutupnya milik pemanggil."""
+    c = conn.cursor()
+    c.execute("""
+    SELECT pc.*, v.name as vessel_name, v.flag as vessel_flag, p.name as port_name, pr.name as principal_name, b.name as branch_name
+    FROM port_calls pc
+    JOIN master_vessels v ON pc.vessel_imo = v.imo
+    JOIN master_ports p ON pc.port_code = p.code
+    JOIN master_principals pr ON pc.principal_id = pr.id
+    JOIN master_branches b ON pc.branch_id = b.id
+    WHERE pc.status != 'CLOSED'
+    ORDER BY pc.created_at DESC
+    """)
+    pcs = [dict(r) for r in c.fetchall()]
+    c.execute("SELECT * FROM clearances")
+    clearances_by_pc = {}
+    for r in c.fetchall():
+        clearances_by_pc.setdefault(r["port_call_id"], []).append(dict(r))
+    # ADR-0022: laytime sudah dihitung atau belum (untuk tenggat
+    # pasca-ATD) + sengketa yang belum selesai beserta tenggatnya.
+    c.execute("SELECT DISTINCT port_call_id FROM laytime_calculations")
+    has_laytime = {r[0] for r in c.fetchall()}
+    # ADR-0025: sertifikat per kapal (untuk badge expired/akan expired).
+    c.execute("SELECT * FROM vessel_certificates")
+    certs_by_imo = {}
+    for r in c.fetchall():
+        certs_by_imo.setdefault(r["vessel_imo"], []).append(dict(r))
+    c.execute("""
+    SELECT d.id, d.port_call_id, d.disputed_amount, d.deadline_date, d.status, dis.item_name
+    FROM fda_disputes d
+    JOIN disbursements dis ON d.disbursement_id = dis.id
+    WHERE d.status IN ('OPEN', 'UNDER_REVIEW')
+    """)
+    disputes_by_pc = {}
+    for r in c.fetchall():
+        disputes_by_pc.setdefault(r["port_call_id"], []).append(dict(r))
+
+    now = datetime.now()
+    cards = []
+    totals = {"overdue_docs": 0, "spb_under_6h": 0, "spb_expired": 0,
+              "needs_spb": 0, "open_disputes": 0, "post_atd_overdue": 0,
+              "cert_alerts": 0, "active_calls": len(pcs)}
+    for pc in pcs:
+        chk = build_clearance_checklist(pc, clearances_by_pc.get(pc["id"], []))
+        overdue = [i["doc_type"] for i in chk["items"] if i["overdue"]]
+        spb_state = "none"
+        spb_hours_left = None
+        if pc.get("spb_expiry_at"):
+            try:
+                delta = parse_iso(pc["spb_expiry_at"]) - now
+                spb_hours_left = round(delta.total_seconds() / 3600, 1)
+                if delta.total_seconds() <= 0:
+                    spb_state = "expired"
+                elif delta <= timedelta(hours=6):
+                    spb_state = "under_6h"
+                else:
+                    spb_state = "ok"
+            except Exception:
+                spb_state = "none"
+        needs_spb = pc["status"] == "BERTHED" and not pc.get("spb_issued_at")
+        _all_dis = disputes_by_pc.get(pc["id"], [])
+        open_dis = [d for d in _all_dis if d["status"] == "OPEN"]
+        # ADR-0022: tenggat pasca-ATD — di kartu hanya yang belum
+        # selesai; yang sudah selesai tidak perlu menarik perhatian.
+        _patd = post_atd_deadlines(pc, True if pc["id"] in has_laytime else None, _all_dis)
+        pending_patd = [i for i in _patd if not i["done"]]
+        patd_overdue = sum(1 for i in pending_patd if i["overdue"])
+        # ADR-0025: peringatan sertifikat kapal (expired/akan expired).
+        _cert_alerts = cert_alerts_for(certs_by_imo.get(pc["vessel_imo"], []))
+        totals["overdue_docs"] += len(overdue)
+        totals["spb_under_6h"] += 1 if spb_state == "under_6h" else 0
+        totals["spb_expired"] += 1 if spb_state == "expired" else 0
+        totals["needs_spb"] += 1 if needs_spb else 0
+        totals["open_disputes"] += len(open_dis)
+        totals["post_atd_overdue"] += patd_overdue
+        totals["cert_alerts"] += 1 if _cert_alerts else 0
+        cards.append({
+            "id": pc["id"], "vessel_name": pc["vessel_name"],
+            "port_name": pc["port_name"], "status": pc["status"],
+            "vessel_category": pc["vessel_category"],
+            "eta": pc.get("eta"), "etd": pc.get("etd"),
+            "overdue_docs": overdue,
+            "spb_state": spb_state, "spb_hours_left": spb_hours_left,
+            "needs_spb": needs_spb, "open_disputes": open_dis,
+            "post_atd": pending_patd, "post_atd_overdue": patd_overdue,
+            "cert_alerts": _cert_alerts,
+        })
+    # Paling mendesak dulu: ada peringatan, lalu dokumen lewat
+    # tenggat terbanyak, lalu SPB paling dekat kedaluwarsa.
+    cards.sort(key=_board_urgency)
+    return cards, totals
+
+
 def _closed_lock_message(pc):
     """Pesan penolakan bila port call sudah CLOSED (arsip 10 tahun).
 
@@ -685,127 +798,113 @@ class AgencyAPIHandler(http.server.SimpleHTTPRequestHandler):
                 return
 
         if path == "/api/shift-board":
-            # Papan tugas shift (ADR-0017): satu layar untuk petugas jaga —
-            # dokumen lewat tenggat, SPB sisa < 6 jam, kapal sudah sandar
-            # tapi SPB belum diterbitkan, sengketa FDA masih OPEN. Datanya
-            # sudah ada (checklist + spb_expiry_at + disputes); endpoint
-            # ini hanya meringkasnya per port call supaya petugas tidak
-            # perlu membuka satu per satu. Menggantikan notifikasi email
-            # untuk tim kecil (Q21 belum dibangun).
+            # Papan tugas shift (ADR-0017): satu layar untuk petugas jaga.
+            # Perhitungan di _shift_board_data (dipakai juga /api/port-calls).
             conn = get_db()
-            c = conn.cursor()
-            c.execute("""
-            SELECT pc.*, v.name as vessel_name, v.flag as vessel_flag, p.name as port_name, pr.name as principal_name, b.name as branch_name
-            FROM port_calls pc
-            JOIN master_vessels v ON pc.vessel_imo = v.imo
-            JOIN master_ports p ON pc.port_code = p.code
-            JOIN master_principals pr ON pc.principal_id = pr.id
-            JOIN master_branches b ON pc.branch_id = b.id
-            WHERE pc.status != 'CLOSED'
-            ORDER BY pc.created_at DESC
-            """)
-            pcs = [dict(r) for r in c.fetchall()]
-            c.execute("SELECT * FROM clearances")
-            clearances_by_pc = {}
-            for r in c.fetchall():
-                clearances_by_pc.setdefault(r["port_call_id"], []).append(dict(r))
-            # ADR-0022: laytime sudah dihitung atau belum (untuk tenggat
-            # pasca-ATD) + sengketa yang belum selesai beserta tenggatnya.
-            c.execute("SELECT DISTINCT port_call_id FROM laytime_calculations")
-            has_laytime = {r[0] for r in c.fetchall()}
-            # ADR-0025: sertifikat per kapal (untuk badge expired/akan expired).
-            c.execute("SELECT * FROM vessel_certificates")
-            certs_by_imo = {}
-            for r in c.fetchall():
-                certs_by_imo.setdefault(r["vessel_imo"], []).append(dict(r))
-            c.execute("""
-            SELECT d.id, d.port_call_id, d.disputed_amount, d.deadline_date, d.status, dis.item_name
-            FROM fda_disputes d
-            JOIN disbursements dis ON d.disbursement_id = dis.id
-            WHERE d.status IN ('OPEN', 'UNDER_REVIEW')
-            """)
-            disputes_by_pc = {}
-            for r in c.fetchall():
-                disputes_by_pc.setdefault(r["port_call_id"], []).append(dict(r))
+            cards, totals = _shift_board_data(conn)
             conn.close()
-
-            now = datetime.now()
-            cards = []
-            totals = {"overdue_docs": 0, "spb_under_6h": 0, "spb_expired": 0,
-                      "needs_spb": 0, "open_disputes": 0, "post_atd_overdue": 0,
-                      "cert_alerts": 0, "active_calls": len(pcs)}
-            for pc in pcs:
-                chk = build_clearance_checklist(pc, clearances_by_pc.get(pc["id"], []))
-                overdue = [i["doc_type"] for i in chk["items"] if i["overdue"]]
-                spb_state = "none"
-                spb_hours_left = None
-                if pc.get("spb_expiry_at"):
-                    try:
-                        delta = parse_iso(pc["spb_expiry_at"]) - now
-                        spb_hours_left = round(delta.total_seconds() / 3600, 1)
-                        if delta.total_seconds() <= 0:
-                            spb_state = "expired"
-                        elif delta <= timedelta(hours=6):
-                            spb_state = "under_6h"
-                        else:
-                            spb_state = "ok"
-                    except Exception:
-                        spb_state = "none"
-                needs_spb = pc["status"] == "BERTHED" and not pc.get("spb_issued_at")
-                _all_dis = disputes_by_pc.get(pc["id"], [])
-                open_dis = [d for d in _all_dis if d["status"] == "OPEN"]
-                # ADR-0022: tenggat pasca-ATD — di kartu hanya yang belum
-                # selesai; yang sudah selesai tidak perlu menarik perhatian.
-                _patd = post_atd_deadlines(pc, True if pc["id"] in has_laytime else None, _all_dis)
-                pending_patd = [i for i in _patd if not i["done"]]
-                patd_overdue = sum(1 for i in pending_patd if i["overdue"])
-                # ADR-0025: peringatan sertifikat kapal (expired/akan expired).
-                _cert_alerts = cert_alerts_for(certs_by_imo.get(pc["vessel_imo"], []))
-                totals["overdue_docs"] += len(overdue)
-                totals["spb_under_6h"] += 1 if spb_state == "under_6h" else 0
-                totals["spb_expired"] += 1 if spb_state == "expired" else 0
-                totals["needs_spb"] += 1 if needs_spb else 0
-                totals["open_disputes"] += len(open_dis)
-                totals["post_atd_overdue"] += patd_overdue
-                totals["cert_alerts"] += 1 if _cert_alerts else 0
-                cards.append({
-                    "id": pc["id"], "vessel_name": pc["vessel_name"],
-                    "port_name": pc["port_name"], "status": pc["status"],
-                    "vessel_category": pc["vessel_category"],
-                    "eta": pc.get("eta"), "etd": pc.get("etd"),
-                    "overdue_docs": overdue,
-                    "spb_state": spb_state, "spb_hours_left": spb_hours_left,
-                    "needs_spb": needs_spb, "open_disputes": open_dis,
-                    "post_atd": pending_patd, "post_atd_overdue": patd_overdue,
-                    "cert_alerts": _cert_alerts,
-                })
-            # Paling mendesak dulu: ada peringatan, lalu dokumen lewat
-            # tenggat terbanyak, lalu SPB paling dekat kedaluwarsa.
-            def _urgency(card):
-                has_alert = bool(card["overdue_docs"] or card["spb_state"] in ("under_6h", "expired")
-                                 or card["needs_spb"] or card["open_disputes"]
-                                 or card["post_atd_overdue"] or card["cert_alerts"])
-                return (0 if has_alert else 1, -(len(card["overdue_docs"]) + card["post_atd_overdue"]),
-                        card["spb_hours_left"] if card["spb_hours_left"] is not None else 9999)
-            cards.sort(key=_urgency)
             self.send_json({"cards": cards, "totals": totals})
             return
 
         if path == "/api/port-calls":
-            conn = get_db()
-            cursor = conn.cursor()
-            cursor.execute("""
-            SELECT pc.*, v.name as vessel_name, v.flag as vessel_flag, p.name as port_name, pr.name as principal_name, b.name as branch_name
-            FROM port_calls pc
+            # ADR-0028: daftar bertab + paginasi server (?tab=active|action|
+            # done|archive&q=...&limit=40&offset=0). Tanpa query apa pun,
+            # perilaku lama dipertahankan (semua baris, tanpa paginasi) —
+            # Tes 1b/13 dan pemanggil lain mengandalkannya.
+            qs = urllib.parse.parse_qs(parsed.query)
+            if not qs:
+                conn = get_db()
+                cursor = conn.cursor()
+                cursor.execute("""
+                SELECT pc.*, v.name as vessel_name, v.flag as vessel_flag, p.name as port_name, pr.name as principal_name, b.name as branch_name
+                FROM port_calls pc
+                JOIN master_vessels v ON pc.vessel_imo = v.imo
+                JOIN master_ports p ON pc.port_code = p.code
+                JOIN master_principals pr ON pc.principal_id = pr.id
+                JOIN master_branches b ON pc.branch_id = b.id
+                ORDER BY pc.created_at DESC
+                """)
+                rows = [dict(r) for r in cursor.fetchall()]
+                conn.close()
+                self.send_json({"port_calls": rows})
+                return
+            tab = (qs.get("tab", ["active"])[0] or "active").strip().lower()
+            if tab not in ("active", "action", "done", "archive"):
+                self.send_json({"error": "tab harus salah satu: active, action, done, archive"}, status=400)
+                return
+            q = (qs.get("q", [""])[0] or "").strip()
+            try:
+                limit = int(qs.get("limit", ["40"])[0])
+                offset = int(qs.get("offset", ["0"])[0])
+            except (TypeError, ValueError):
+                self.send_json({"error": "limit dan offset harus angka"}, status=400)
+                return
+            limit = max(1, min(limit, 100))
+            offset = max(0, offset)
+            # "Selesai" vs "Arsip": tutup keuangan < 30 hari vs >= 30 hari.
+            # finance_closed_at hanya diisi bersamaan dengan status CLOSED
+            # (close-finance), jadi tab Aktif (status != CLOSED) setara
+            # dengan finance_closed_at IS NULL — definisi yang sama dengan
+            # papan shift.
+            cutoff = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+            where_tab = {
+                "active": ("pc.status != 'CLOSED'", []),
+                "action": ("pc.status != 'CLOSED'", []),
+                "done": ("pc.status = 'CLOSED' AND pc.finance_closed_at >= ?", [cutoff]),
+                "archive": ("pc.status = 'CLOSED' AND pc.finance_closed_at < ?", [cutoff]),
+            }[tab]
+            where = [where_tab[0]]
+            params = list(where_tab[1])
+            if q:
+                like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+                where.append("(v.name LIKE ? ESCAPE '\\' OR pc.vessel_imo LIKE ? ESCAPE '\\' OR pc.id LIKE ? ESCAPE '\\')")
+                params += [like, like, like]
+            where_sql = " AND ".join(where)
+            base_from = """FROM port_calls pc
             JOIN master_vessels v ON pc.vessel_imo = v.imo
             JOIN master_ports p ON pc.port_code = p.code
             JOIN master_principals pr ON pc.principal_id = pr.id
             JOIN master_branches b ON pc.branch_id = b.id
-            ORDER BY pc.created_at DESC
-            """)
-            rows = [dict(r) for r in cursor.fetchall()]
+            """
+            select_cols = "SELECT pc.*, v.name as vessel_name, v.flag as vessel_flag, p.name as port_name, pr.name as principal_name, b.name as branch_name "
+            conn = get_db()
+            c = conn.cursor()
+            # Counter per tab (tanpa q — angka global, untuk label tab).
+            # "action" dihitung dari papan shift (satu-satunya definisi
+            # "butuh tindakan" yang sudah teruji); biayanya satu perhitungan
+            # papan per request — sama dengan yang sudah dilakukan endpoint
+            # /api/shift-board di setiap muat daftar.
+            board_cards, _board_totals = _shift_board_data(conn)
+            tab_counts = {
+                "active": c.execute(f"SELECT COUNT(*) {base_from} WHERE pc.status != 'CLOSED'", []).fetchone()[0],
+                "action": sum(1 for card in board_cards if _card_has_alert(card)),
+                "done": c.execute(f"SELECT COUNT(*) {base_from} WHERE pc.status = 'CLOSED' AND pc.finance_closed_at >= ?", [cutoff]).fetchone()[0],
+                "archive": c.execute(f"SELECT COUNT(*) {base_from} WHERE pc.status = 'CLOSED' AND pc.finance_closed_at < ?", [cutoff]).fetchone()[0],
+            }
+            if tab in ("active", "action"):
+                # Urutan urgensi tidak bisa dihitung di SQL — ambil baris
+                # yang lolos filter, urutkan di Python, baru potong halaman.
+                # Tab aktif biasanya hanya puluhan baris, jadi ini murah.
+                c.execute(f"{select_cols}{base_from} WHERE {where_sql} ORDER BY pc.created_at DESC", params)
+                rows = [dict(r) for r in c.fetchall()]
+                if tab == "action":
+                    alert_ids = {card["id"] for card in board_cards if _card_has_alert(card)}
+                    rows = [r for r in rows if r["id"] in alert_ids]
+                rank = {card["id"]: i for i, card in enumerate(board_cards)}
+                rows.sort(key=lambda r: r["created_at"], reverse=True)
+                rows.sort(key=lambda r: rank.get(r["id"], 1 << 30))
+                total = len(rows)
+                page = rows[offset:offset + limit]
+            else:
+                c.execute(f"SELECT COUNT(*) {base_from} WHERE {where_sql}", params)
+                total = c.fetchone()[0]
+                c.execute(f"{select_cols}{base_from} WHERE {where_sql} ORDER BY pc.created_at DESC LIMIT ? OFFSET ?", params + [limit, offset])
+                page = [dict(r) for r in c.fetchall()]
             conn.close()
-            self.send_json({"port_calls": rows})
+            self.send_json({"port_calls": page, "total": total,
+                            "has_more": offset + len(page) < total,
+                            "limit": limit, "offset": offset, "tab": tab,
+                            "tab_counts": tab_counts})
             return
 
         if path == "/api/master/ports":

@@ -345,6 +345,7 @@ lokal, tanpa query DB per request).
 - **Milestone GANGWAY_DOWN + COB (ADR-0024):** dua kode milestone baru (13 kode) — gangway down dan cargo documents on board, keduanya wajib catat menit tepat dan tidak mengubah status.
 - **Sertifikat kapal (ADR-0025):** pelacakan SSCEC + sertifikat statutori per kapal — badge merah bila kedaluwarsa, kuning bila sisa ≤ 30 hari, di header detail dan kartu papan shift; tanggal kedaluwarsa di masa lalu boleh dicatat (justru pemicu pengingat).
 - **LK3 Masuk + SPKK/RKBM (ADR-0026):** template clearance kini 14 item — LK3 Masuk (tenggat ETA+24 jam) dan SPKK/RKBM (tanpa tenggat tanggal, dipantau statusnya); gate SPB tidak berubah.
+- **Daftar port call bertab + paginasi (ADR-0028):** daftar kanan default hanya menampilkan yang Aktif — tab Aktif / Perlu Tindakan / Selesai / Arsip dengan counter, pencarian kapal/IMO/PC-ID, tombol "Muat lebih banyak", dan "Menampilkan X dari Y". Yang sudah ditutup lebih dari 30 hari pindah ke Arsip.
 
 - **Hash berkas:** kolom `file_sha256`/`file_name` hanya terisi bila ada
   berkas yang benar-benar diunggah (fitur upload belum ada); hash yang dulu

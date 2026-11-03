@@ -1794,6 +1794,46 @@ def test_integration():
         assert 'id="pc-tabs"' in html44 and 'id="pc-search"' in html44
         assert 'id="pc-load-more"' in html44 and 'id="pc-count"' in html44
         print("[TEST 44/44] ADR-0028: daftar bertab (active/action/done/archive) + pencarian + paginasi + urutan urgensi; tanpa query tetap perilaku lama.")
+        # 44. Tindak lanjut review celah SOP: (a) sertifikat expiry < issued
+        # ditolak server 400 (dulu lolos 200 — terbukti probe review);
+        # expiry == issued dan tanpa issued tetap diterima; (b) tooltip
+        # catatan di badge sertifikat (UI) + notes ikut di alert papan
+        # shift; (c) basis SPKK menyebut "tanpa tenggat".
+        _expect_400("/api/vessels/9431289/certificates",
+                    {"cert_type": "IOPP", "cert_number": "T44-BAD",
+                     "issued_date": "2026-06-15", "expiry_date": "2026-01-01"},
+                    "sama atau setelah issued_date")
+        with urllib.request.urlopen(f"{base_url}/api/vessels/9431289/certificates") as res:
+            certs44 = json.loads(res.read().decode("utf-8"))["certificates"]
+        assert not any(c["cert_number"] == "T44-BAD" for c in certs44), "sertifikat yang ditolak tidak boleh tersimpan"
+        with urllib.request.urlopen(_post("/api/vessels/9431289/certificates",
+                {"cert_type": "IOPP", "cert_number": "T44-EQ",
+                 "issued_date": "2026-06-15", "expiry_date": "2026-06-15"})) as res:
+            assert res.status == 200
+        with urllib.request.urlopen(_post("/api/vessels/9431289/certificates",
+                {"cert_type": "IOPP", "cert_number": "T44-NOISSUED",
+                 "expiry_date": "2026-12-31", "notes": "tanpa tanggal terbit"})) as res:
+            assert res.status == 200
+        # (b) UI: certBadge memakai notes sebagai tooltip.
+        with urllib.request.urlopen(f"{base_url}/") as res:
+            html44 = res.read().decode("utf-8")
+        assert 'title="${esc(c.notes)}"' in html44, "certBadge harus memakai notes sebagai tooltip"
+        # Alert papan shift membawa notes (server): SMC kedaluwarsa ber-notes.
+        with urllib.request.urlopen(_post("/api/vessels/9431289/certificates",
+                {"cert_type": "SMC", "cert_number": "T44-EXP",
+                 "issued_date": "2025-01-01", "expiry_date": "2026-10-28",
+                 "notes": "T44 catatan alert"})) as res:
+            assert res.status == 200
+        with urllib.request.urlopen(f"{base_url}/api/shift-board") as res:
+            sb44 = json.loads(res.read().decode("utf-8"))
+        smc_alerts = [a for card in sb44["cards"] for a in (card.get("cert_alerts") or []) if a["cert_type"] == "SMC"]
+        assert smc_alerts and smc_alerts[0].get("notes") == "T44 catatan alert", f"alert shift-board harus membawa notes, dapat {smc_alerts}"
+        # (c) basis SPKK menyebut tanpa tenggat (checklist API).
+        with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc44}/clearance-checklist") as res:
+            chk44 = json.loads(res.read().decode("utf-8"))
+        spkk44 = next(i for i in chk44["items"] if i["category"] == "spkk")
+        assert "tanpa tenggat" in spkk44["basis"], f"basis SPKK harus menyebut tanpa tenggat, dapat {spkk44['basis']}"
+        print("[TEST 44/44] Tindak lanjut review: expiry>=issued ditolak 400, tooltip notes di badge, basis SPKK 'tanpa tenggat'.")
 
         print("\nSEMUA INTEGRATION TEST LULUS (100% VERIFIED)!")
 

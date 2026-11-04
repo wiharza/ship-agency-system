@@ -1144,7 +1144,7 @@ def test_integration():
             _prepare_database_once()
         finally:
             os.environ["AGENCY_DB_FILE"] = old_db_file
-        print("[TEST 34/44] ADR-0018: cold start melengkapi tabel baru di DB lama tanpa menyentuh data.")
+        print("[TEST 34/45] ADR-0018: cold start melengkapi tabel baru di DB lama tanpa menyentuh data.")
         # 35. Test Validasi Input (ADR-0019): whitelist + normalisasi
         #     clearance, milestone_code wajib, laytime wajib 3 waktu,
         #     JSON rusak -> 400 (bukan koneksi putus / data demo tersimpan).
@@ -1212,7 +1212,7 @@ def test_integration():
         _expect_raw_400("/api/login", b"[1, 2, 3]", "Body JSON harus berupa objek")
         with urllib.request.urlopen(f"{base_url}/api/port-calls") as res:
             assert res.status == 200, "Server harus tetap hidup setelah body rusak"
-        print("[TEST 35/44] ADR-0019: validasi whitelist/normalisasi clearance+milestone, laytime wajib 3 waktu, JSON rusak 400.")
+        print("[TEST 35/45] ADR-0019: validasi whitelist/normalisasi clearance+milestone, laytime wajib 3 waktu, JSON rusak 400.")
 
         # 36. Test Security Headers + /api/health (ADR-0019).
         anon_opener = urllib.request.build_opener()  # tanpa cookie
@@ -1229,7 +1229,7 @@ def test_integration():
             assert res.headers.get("X-Frame-Options") == "DENY"
         with anon_opener.open(f"{base_url}/") as res:
             assert res.headers.get("X-Content-Type-Options") == "nosniff", "Halaman login juga harus membawa security headers"
-        print("[TEST 36/44] ADR-0019: /api/health tanpa auth + security headers di API, UI, dan halaman login.")
+        print("[TEST 36/45] ADR-0019: /api/health tanpa auth + security headers di API, UI, dan halaman login.")
 
         # 37. Status VOID (ADR-0020): baris salah input dibatalkan — tetap
         #     tersimpan sebagai riwayat, gate SPB + daftar tertunda
@@ -1310,7 +1310,7 @@ def test_integration():
             det37 = json.loads(res.read().decode("utf-8"))
         voided = [c for c in det37["clearances"] if c["status"] == "VOID"]
         assert len(voided) == 2, f"Harus ada 2 baris VOID sebagai riwayat, dapat {len(voided)}"
-        print("[TEST 37/44] ADR-0020: VOID membatalkan salah input — gate abaikan baris void bersyarat, wajib tetap blokir, VOID final + OPS/ADMIN.")
+        print("[TEST 37/45] ADR-0020: VOID membatalkan salah input — gate abaikan baris void bersyarat, wajib tetap blokir, VOID final + OPS/ADMIN.")
 
         # 38. Migrasi CHECK VOID (ADR-0020): DB lama yang CHECK status-nya
         #     belum mengenal VOID dinaikkan (rebuild tabel) tanpa menyentuh
@@ -1387,7 +1387,7 @@ def test_integration():
             c2.close()
         finally:
             os.environ["AGENCY_DB_FILE"] = old_db_file
-        print("[TEST 38/44] ADR-0020: migrasi CHECK VOID (cold start + init_db) tanpa mengubah data; VOID bisa disimpan; idempotent.")
+        print("[TEST 38/45] ADR-0020: migrasi CHECK VOID (cold start + init_db) tanpa mengubah data; VOID bisa disimpan; idempotent.")
 
         # 39. Tambah pelabuhan master (ADR-0021): endpoint + validasi.
         # Kode huruf kecil -> dinormalisasi jadi IDBLW; duplikat -> 400;
@@ -1434,7 +1434,7 @@ def test_integration():
         _expect_400("/api/master/ports",
                     {"code": "IDSBY", "name": "Surabaya", "province": "Jawa Timur", "inaportnet_level": "Kelas I", "max_draft": -1},
                     "tidak boleh negatif")
-        print("[TEST 39/44] ADR-0021: tambah pelabuhan master (normalisasi kode+level, duplikat/kode/level/draft ditolak, terminal ikut tampil).")
+        print("[TEST 39/45] ADR-0021: tambah pelabuhan master (normalisasi kode+level, duplikat/kode/level/draft ditolak, terminal ikut tampil).")
 
         # 40. ADR-0022 — tenggat pasca-ATD (laytime 3d, voucher 7d,
         # FDA 30d, sengketa 14d) dihitung dari ATD; badge di detail +
@@ -1543,7 +1543,7 @@ def test_integration():
         with urllib.request.urlopen(f"{base_url}/api/port-calls/{pc42}") as res:
             det42 = json.loads(res.read().decode("utf-8"))
         assert det42["post_atd"] == [], f"tanpa ATD post_atd harus kosong, dapat {det42['post_atd']}"
-        print("[TEST 40/44] ADR-0022: tenggat pasca-ATD (laytime 3d/voucher 7d/FDA 30d/sengketa 14d) + badge detail & papan shift.")
+        print("[TEST 40/45] ADR-0022: tenggat pasca-ATD (laytime 3d/voucher 7d/FDA 30d/sengketa 14d) + badge detail & papan shift.")
 
         # 41. ADR-0024 — milestone GANGWAY_DOWN + COB (SOP Tahap 3-4):
         # wajib catat menit tepat, keduanya TIDAK mengubah status.
@@ -1569,7 +1569,7 @@ def test_integration():
         assert {"GANGWAY_DOWN", "COB"} <= codes43, f"kedua milestone harus tercatat, dapat {codes43}"
         gw = next(m for m in det43["milestones"] if m["milestone_code"] == "GANGWAY_DOWN")
         assert gw["event_time"] == "2026-11-12 10:05"
-        print("[TEST 41/44] ADR-0024: milestone GANGWAY_DOWN + COB tercatat (menit tepat), status tidak berubah.")
+        print("[TEST 41/45] ADR-0024: milestone GANGWAY_DOWN + COB tercatat (menit tepat), status tidak berubah.")
 
         # 42. ADR-0025 — sertifikat kapal: tambah + badge expired/akan
         # expired (<= 30 hari) di detail + papan shift; expiry terbaru
@@ -1630,7 +1630,7 @@ def test_integration():
         assert len(smc) == 1 and smc[0]["status"] == "expiring"
         assert smc[0]["days_left"] in (9, 10)
         assert board["totals"]["cert_alerts"] >= 2
-        print("[TEST 42/44] ADR-0025: sertifikat kapal (SSCEC + statutori) — tambah, badge expired/akan expired di detail & papan shift.")
+        print("[TEST 42/45] ADR-0025: sertifikat kapal (SSCEC + statutori) — tambah, badge expired/akan expired di detail & papan shift.")
 
         # 43. ADR-0026 — LK3 Masuk + SPKK/RKBM di template clearance:
         # template kini 14 item; LK3 tenggat ETA+24 jam; SPKK tanpa
@@ -1685,115 +1685,8 @@ def test_integration():
         seed_types = {c["doc_type"]: c["status"] for c in det_seed2["clearances"]}
         assert seed_types.get("LK3 Masuk / Laporan Kedatangan Kapal") == "APPROVED"
         assert seed_types.get("SPKK / RKBM (Persetujuan Kegiatan Kapal)") == "APPROVED"
-        print("[TEST 43/44] ADR-0026: LK3 Masuk + SPKK/RKBM di template (14 item); LK3 ETA+24 jam, SPKK tanpa tenggat tanggal, gate SPB tidak berubah.")
+        print("[TEST 43/45] ADR-0026: LK3 Masuk + SPKK/RKBM di template (14 item); LK3 ETA+24 jam, SPKK tanpa tenggat tanggal, gate SPB tidak berubah.")
 
-        # 44. ADR-0028 — daftar port call bertab + paginasi server:
-        # tab active/action/done/archive, pencarian q, limit/offset +
-        # total/has_more/tab_counts, urutan urgensi; tanpa query =
-        # perilaku lama (semua baris).
-        # Siapkan 2 port call CLOSED: satu baru ditutup (< 30 hari),
-        # satu sudah lama (>= 30 hari) — via SQL langsung (status +
-        # finance_closed_at hanya diisi close-finance; alur penuh sudah
-        # diuji Tes 13b/28). Tanggal dihitung relatif terhadap hari ini
-        # supaya tes tidak basi. Kapal segar tanpa sertifikat untuk PC
-        # tanpa alert (pembanding urutan urgensi).
-        _now44 = datetime.now()
-        _recent44 = (_now44 - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
-        _old44 = (_now44 - timedelta(days=60)).strftime("%Y-%m-%d %H:%M:%S")
-        _cut44 = (_now44 - timedelta(days=30)).strftime("%Y-%m-%d")
-        with urllib.request.urlopen(_post("/api/port-calls",
-                {"vessel_imo": "9876543", "port_code": "IDTPP",
-                 "terminal_name": "JICT (Jakarta Int. Container Terminal)",
-                 "cargo_name": "Batu Bara", "cargo_tonnage": 50000,
-                 "eta": "2026-11-12 08:00", "vessel_category": "DOMESTIC"})) as res:
-            pc46 = json.loads(res.read().decode("utf-8"))["port_call_id"]
-        with urllib.request.urlopen(_post("/api/port-calls",
-                {"vessel_imo": "9431289", "port_code": "IDTPP",
-                 "terminal_name": "JICT (Jakarta Int. Container Terminal)",
-                 "cargo_name": "CPO", "cargo_tonnage": 30000,
-                 "eta": "2026-11-12 08:00", "vessel_category": "FOREIGN"})) as res:
-            pc47 = json.loads(res.read().decode("utf-8"))["port_call_id"]
-        _db = get_db()
-        with _db:
-            _db.execute("UPDATE port_calls SET status = 'CLOSED', finance_closed_at = ?, finance_closed_by = 'fin_tes' WHERE id = ?", (_recent44, pc46))
-            _db.execute("UPDATE port_calls SET status = 'CLOSED', finance_closed_at = ?, finance_closed_by = 'fin_tes' WHERE id = ?", (_old44, pc47))
-        _db.close()
-        with urllib.request.urlopen(_post("/api/master/vessels",
-                {"imo": "9550001", "name": "MV. PAGINASI UJI", "flag": "Indonesia",
-                 "vessel_type": "General Cargo", "grt": 12000, "dwt": 18000})) as res:
-            assert res.status == 200
-        with urllib.request.urlopen(_post("/api/port-calls",
-                {"vessel_imo": "9550001", "port_code": "IDTPP",
-                 "terminal_name": "JICT (Jakarta Int. Container Terminal)",
-                 "cargo_name": "Batu Bara", "cargo_tonnage": 10000,
-                 "eta": "2026-12-01 08:00", "vessel_category": "DOMESTIC"})) as res:
-            pc48 = json.loads(res.read().decode("utf-8"))["port_call_id"]
-        def _list(query):
-            with urllib.request.urlopen(f"{base_url}/api/port-calls{query}") as res:
-                return json.loads(res.read().decode("utf-8"))
-        # Tanpa query: perilaku lama (semua baris, tanpa total).
-        legacy = _list("")
-        assert "total" not in legacy and len(legacy["port_calls"]) >= 3
-        assert any(p["id"] == "PC-2026-JKT-0001" for p in legacy["port_calls"])
-        # Tab active: hanya bukan CLOSED; pc46/pc47 tidak ada.
-        act = _list("?tab=active")
-        assert all(p["status"] != "CLOSED" for p in act["port_calls"])
-        assert not any(p["id"] in (pc46, pc47) for p in act["port_calls"])
-        assert act["total"] == len(act["port_calls"]) and act["tab"] == "active"
-        assert act["tab_counts"]["active"] == act["total"]
-        assert set(act["tab_counts"]) == {"active", "action", "done", "archive"}
-        # Tab done: pc46 (tutup < 30 hari) ada, pc47 tidak; semua baris
-        # memang tutup < 30 hari. Tab archive: sebaliknya.
-        done = _list("?tab=done")
-        ids_done = [p["id"] for p in done["port_calls"]]
-        assert pc46 in ids_done and pc47 not in ids_done, ids_done
-        assert all(p["finance_closed_at"] and p["finance_closed_at"][:10] >= _cut44 for p in done["port_calls"]), done["port_calls"]
-        assert done["tab_counts"]["done"] == done["total"] and done["total"] >= 1
-        arch = _list("?tab=archive")
-        ids_arch = [p["id"] for p in arch["port_calls"]]
-        assert pc47 in ids_arch and pc46 not in ids_arch, ids_arch
-        assert all(p["finance_closed_at"] and p["finance_closed_at"][:10] < _cut44 for p in arch["port_calls"]), arch["port_calls"]
-        assert arch["tab_counts"]["archive"] == arch["total"] and arch["total"] >= 1
-        # Tab action: pc45 (LK3 overdue, Tes 43) ada; PC segar tanpa
-        # alert (pc48) dan yang sudah CLOSED tidak ada.
-        actn = _list("?tab=action")
-        ids_action = [p["id"] for p in actn["port_calls"]]
-        assert pc45 in ids_action, f"pc45 (LK3 overdue) harus di Perlu Tindakan, dapat {ids_action}"
-        assert pc48 not in ids_action and pc46 not in ids_action and pc47 not in ids_action
-        assert actn["tab_counts"]["action"] == actn["total"]
-        # Urutan urgensi di tab active: pc45 (ada alert) di atas pc48 (tanpa alert).
-        ids_active = [p["id"] for p in act["port_calls"]]
-        assert ids_active.index(pc45) < ids_active.index(pc48), f"pc45 ber-alert harus di atas pc48, urutan {ids_active}"
-        # Pencarian q: nama kapal / IMO / ID port call.
-        assert [p["id"] for p in _list("?tab=active&q=PAGINASI")["port_calls"]] == [pc48]
-        assert pc48 in [p["id"] for p in _list("?tab=active&q=9550001")["port_calls"]]
-        assert pc48 in [p["id"] for p in _list(f"?tab=active&q={pc48}")["port_calls"]]
-        assert pc48 not in [p["id"] for p in _list("?tab=active&q=SAMUDRA")["port_calls"]]
-        # Paginasi: limit/offset + total/has_more, halaman tidak tumpang tindih.
-        p1 = _list("?tab=active&limit=2&offset=0")
-        assert len(p1["port_calls"]) == 2 and p1["has_more"] is True and p1["total"] == act["total"]
-        p2 = _list("?tab=active&limit=2&offset=2")
-        assert len(p2["port_calls"]) == 2
-        assert not ({p["id"] for p in p1["port_calls"]} & {p["id"] for p in p2["port_calls"]})
-        pend = _list(f"?tab=active&limit=2&offset={act['total']}")
-        assert pend["port_calls"] == [] and pend["has_more"] is False
-        # Tab/limit tidak valid -> 400.
-        try:
-            urllib.request.urlopen(f"{base_url}/api/port-calls?tab=bogus")
-            assert False, "tab bogus harus ditolak 400"
-        except urllib.error.HTTPError as e:
-            assert e.code == 400
-        try:
-            urllib.request.urlopen(f"{base_url}/api/port-calls?tab=active&limit=abc")
-            assert False, "limit bukan angka harus ditolak 400"
-        except urllib.error.HTTPError as e:
-            assert e.code == 400
-        # UI: tab + pencarian + tombol muat lebih banyak tersaji.
-        with urllib.request.urlopen(f"{base_url}/") as res:
-            html44 = res.read().decode("utf-8")
-        assert 'id="pc-tabs"' in html44 and 'id="pc-search"' in html44
-        assert 'id="pc-load-more"' in html44 and 'id="pc-count"' in html44
-        print("[TEST 44/44] ADR-0028: daftar bertab (active/action/done/archive) + pencarian + paginasi + urutan urgensi; tanpa query tetap perilaku lama.")
         # 44. Tindak lanjut review celah SOP: (a) sertifikat expiry < issued
         # ditolak server 400 (dulu lolos 200 — terbukti probe review);
         # expiry == issued dan tanpa issued tetap diterima; (b) tooltip
@@ -1833,7 +1726,114 @@ def test_integration():
             chk44 = json.loads(res.read().decode("utf-8"))
         spkk44 = next(i for i in chk44["items"] if i["category"] == "spkk")
         assert "tanpa tenggat" in spkk44["basis"], f"basis SPKK harus menyebut tanpa tenggat, dapat {spkk44['basis']}"
-        print("[TEST 44/44] Tindak lanjut review: expiry>=issued ditolak 400, tooltip notes di badge, basis SPKK 'tanpa tenggat'.")
+        print("[TEST 44/45] Tindak lanjut review: expiry>=issued ditolak 400, tooltip notes di badge, basis SPKK 'tanpa tenggat'.")
+        # 45. ADR-0028 — daftar port call bertab + paginasi server:
+        # tab active/action/done/archive, pencarian q, limit/offset +
+        # total/has_more/tab_counts, urutan urgensi; tanpa query =
+        # perilaku lama (semua baris).
+        # Siapkan 2 port call CLOSED: satu baru ditutup (< 30 hari),
+        # satu sudah lama (>= 30 hari) — via SQL langsung (status +
+        # finance_closed_at hanya diisi close-finance; alur penuh sudah
+        # diuji Tes 13b/28). Tanggal dihitung relatif terhadap hari ini
+        # supaya tes tidak basi. Kapal segar tanpa sertifikat untuk PC
+        # tanpa alert (pembanding urutan urgensi).
+        _now45 = datetime.now()
+        _recent45 = (_now45 - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        _old45 = (_now45 - timedelta(days=60)).strftime("%Y-%m-%d %H:%M:%S")
+        _cut45 = (_now45 - timedelta(days=30)).strftime("%Y-%m-%d")
+        with urllib.request.urlopen(_post("/api/port-calls",
+                {"vessel_imo": "9876543", "port_code": "IDTPP",
+                 "terminal_name": "JICT (Jakarta Int. Container Terminal)",
+                 "cargo_name": "Batu Bara", "cargo_tonnage": 50000,
+                 "eta": "2026-11-12 08:00", "vessel_category": "DOMESTIC"})) as res:
+            pc46 = json.loads(res.read().decode("utf-8"))["port_call_id"]
+        with urllib.request.urlopen(_post("/api/port-calls",
+                {"vessel_imo": "9431289", "port_code": "IDTPP",
+                 "terminal_name": "JICT (Jakarta Int. Container Terminal)",
+                 "cargo_name": "CPO", "cargo_tonnage": 30000,
+                 "eta": "2026-11-12 08:00", "vessel_category": "FOREIGN"})) as res:
+            pc47 = json.loads(res.read().decode("utf-8"))["port_call_id"]
+        _db = get_db()
+        with _db:
+            _db.execute("UPDATE port_calls SET status = 'CLOSED', finance_closed_at = ?, finance_closed_by = 'fin_tes' WHERE id = ?", (_recent45, pc46))
+            _db.execute("UPDATE port_calls SET status = 'CLOSED', finance_closed_at = ?, finance_closed_by = 'fin_tes' WHERE id = ?", (_old45, pc47))
+        _db.close()
+        with urllib.request.urlopen(_post("/api/master/vessels",
+                {"imo": "9550001", "name": "MV. PAGINASI UJI", "flag": "Indonesia",
+                 "vessel_type": "General Cargo", "grt": 12000, "dwt": 18000})) as res:
+            assert res.status == 200
+        with urllib.request.urlopen(_post("/api/port-calls",
+                {"vessel_imo": "9550001", "port_code": "IDTPP",
+                 "terminal_name": "JICT (Jakarta Int. Container Terminal)",
+                 "cargo_name": "Batu Bara", "cargo_tonnage": 10000,
+                 "eta": "2026-12-01 08:00", "vessel_category": "DOMESTIC"})) as res:
+            pc48 = json.loads(res.read().decode("utf-8"))["port_call_id"]
+        def _list(query):
+            with urllib.request.urlopen(f"{base_url}/api/port-calls{query}") as res:
+                return json.loads(res.read().decode("utf-8"))
+        # Tanpa query: perilaku lama (semua baris, tanpa total).
+        legacy = _list("")
+        assert "total" not in legacy and len(legacy["port_calls"]) >= 3
+        assert any(p["id"] == "PC-2026-JKT-0001" for p in legacy["port_calls"])
+        # Tab active: hanya bukan CLOSED; pc46/pc47 tidak ada.
+        act = _list("?tab=active")
+        assert all(p["status"] != "CLOSED" for p in act["port_calls"])
+        assert not any(p["id"] in (pc46, pc47) for p in act["port_calls"])
+        assert act["total"] == len(act["port_calls"]) and act["tab"] == "active"
+        assert act["tab_counts"]["active"] == act["total"]
+        assert set(act["tab_counts"]) == {"active", "action", "done", "archive"}
+        # Tab done: pc46 (tutup < 30 hari) ada, pc47 tidak; semua baris
+        # memang tutup < 30 hari. Tab archive: sebaliknya.
+        done = _list("?tab=done")
+        ids_done = [p["id"] for p in done["port_calls"]]
+        assert pc46 in ids_done and pc47 not in ids_done, ids_done
+        assert all(p["finance_closed_at"] and p["finance_closed_at"][:10] >= _cut45 for p in done["port_calls"]), done["port_calls"]
+        assert done["tab_counts"]["done"] == done["total"] and done["total"] >= 1
+        arch = _list("?tab=archive")
+        ids_arch = [p["id"] for p in arch["port_calls"]]
+        assert pc47 in ids_arch and pc46 not in ids_arch, ids_arch
+        assert all(p["finance_closed_at"] and p["finance_closed_at"][:10] < _cut45 for p in arch["port_calls"]), arch["port_calls"]
+        assert arch["tab_counts"]["archive"] == arch["total"] and arch["total"] >= 1
+        # Tab action: pc45 (LK3 overdue, Tes 43) ada; PC segar tanpa
+        # alert (pc48) dan yang sudah CLOSED tidak ada.
+        actn = _list("?tab=action")
+        ids_action = [p["id"] for p in actn["port_calls"]]
+        assert pc45 in ids_action, f"pc45 (LK3 overdue) harus di Perlu Tindakan, dapat {ids_action}"
+        assert pc48 not in ids_action and pc46 not in ids_action and pc47 not in ids_action
+        assert actn["tab_counts"]["action"] == actn["total"]
+        # Urutan urgensi di tab active: pc45 (ada alert) di atas pc48 (tanpa alert).
+        ids_active = [p["id"] for p in act["port_calls"]]
+        assert ids_active.index(pc45) < ids_active.index(pc48), f"pc45 ber-alert harus di atas pc48, urutan {ids_active}"
+        # Pencarian q: nama kapal / IMO / ID port call.
+        assert [p["id"] for p in _list("?tab=active&q=PAGINASI")["port_calls"]] == [pc48]
+        assert pc48 in [p["id"] for p in _list("?tab=active&q=9550001")["port_calls"]]
+        assert pc48 in [p["id"] for p in _list(f"?tab=active&q={pc48}")["port_calls"]]
+        assert pc48 not in [p["id"] for p in _list("?tab=active&q=SAMUDRA")["port_calls"]]
+        # Paginasi: limit/offset + total/has_more, halaman tidak tumpang tindih.
+        p1 = _list("?tab=active&limit=2&offset=0")
+        assert len(p1["port_calls"]) == 2 and p1["has_more"] is True and p1["total"] == act["total"]
+        p2 = _list("?tab=active&limit=2&offset=2")
+        assert len(p2["port_calls"]) == 2
+        assert not ({p["id"] for p in p1["port_calls"]} & {p["id"] for p in p2["port_calls"]})
+        pend = _list(f"?tab=active&limit=2&offset={act['total']}")
+        assert pend["port_calls"] == [] and pend["has_more"] is False
+        # Tab/limit tidak valid -> 400.
+        try:
+            urllib.request.urlopen(f"{base_url}/api/port-calls?tab=bogus")
+            assert False, "tab bogus harus ditolak 400"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+        try:
+            urllib.request.urlopen(f"{base_url}/api/port-calls?tab=active&limit=abc")
+            assert False, "limit bukan angka harus ditolak 400"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+        # UI: tab + pencarian + tombol muat lebih banyak tersaji.
+        with urllib.request.urlopen(f"{base_url}/") as res:
+            html45 = res.read().decode("utf-8")
+        assert 'id="pc-tabs"' in html45 and 'id="pc-search"' in html45
+        assert 'id="pc-load-more"' in html45 and 'id="pc-count"' in html45
+        print("[TEST 45/45] ADR-0028: daftar bertab (active/action/done/archive) + pencarian + paginasi + urutan urgensi; tanpa query tetap perilaku lama.")
 
         print("\nSEMUA INTEGRATION TEST LULUS (100% VERIFIED)!")
 

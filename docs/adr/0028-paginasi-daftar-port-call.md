@@ -68,7 +68,7 @@ untuk ratusan entri (sesuai rencana).
 
 ## 4. Verifikasi
 
-Tes 44 baru: tanpa query = perilaku lama; tiap tab berisi baris yang
+Tes 45 baru: tanpa query = perilaku lama; tiap tab berisi baris yang
 tepat (Selesai/Arsip dipisah 30 hari, tanggal relatif terhadap hari
 ini); Perlu Tindakan memuat PC ber-alert (LK3 overdue) dan bukan PC
 segar; urutan urgensi (ber-alert di atas tanpa alert); pencarian
@@ -81,4 +81,4 @@ LEWAT TENGGAT", klik Perlu Tindakan -> 1 kartu + "Menampilkan 1 dari
 adalah fetch `/clearance-checklist` yang tidak di-mock di fixture —
 bukan bug aplikasi.
 
-Terverifikasi: API 44/44, laytime + libsql lulus.
+Terverifikasi: API 45/45, laytime + libsql lulus.

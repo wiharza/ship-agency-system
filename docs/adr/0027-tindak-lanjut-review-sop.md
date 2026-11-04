@@ -55,4 +55,4 @@ Eksekusi `certBadge` di Node vs data seed asli: badge SSCEC membawa
 `title="Tanggal kedaluwarsa placeholder…"`, badge tanpa notes tidak
 berubah.
 
-Terverifikasi: API 44/44, laytime + libsql lulus.
+Terverifikasi: API 45/45, laytime + libsql lulus.
